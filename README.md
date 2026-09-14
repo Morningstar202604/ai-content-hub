@@ -418,6 +418,30 @@ python cli.py --headed login --platform cnblogs --on-captcha handoff
 - **可选 API 鉴权**：config.json 里设 `"api_token": "随机串"` 即启用，所有请求需带
   `X-API-Token` 头（默认关闭，本机使用不需要）。服务要暴露到局域网/公网时必须开启。
 
+## 测试：E2E 全模拟套件（不碰真号）
+
+`tests/` 目录自带一套本地模拟平台（Flask mock，接口与页面元素和真实平台同构），
+全流程验证适配器的**真实代码路径**——真实选择器、真实接口调用、真实跳转判定，
+只是把目标域名换成 127.0.0.1，**不注册不登录不外发**：
+
+```bash
+# 掘金（协议型 API 链路）
+python tests/mocks/mock_juejin.py &            # 模拟掘金 :9102
+python tests/run_patched_server.py &           # Web 服务 :8800（适配器指向 mock）
+python tests/e2e_login_flow.py                 # 登录→扫码→在线→建文档→发布→落库
+python tests/e2e_screenshots.py [截图目录]      # 全程截图留证版
+
+# 知乎（UI 编辑器注入链路：Draft.js 填标题 → HTML 粘贴 → 点发布 → /p/{id} 跳转）
+python tests/mocks/mock_zhihu.py &
+python tests/run_patched_server_zhihu.py &
+python tests/e2e_zhihu.py                      # API 级 4 步冒烟
+python tests/e2e_zhihu_screenshots.py [截图目录]
+```
+
+实测成绩（2026-09）：掘金截图版 **16/16**（REST 1~5ms、扫码到在线 7.9s、发布 0.6s、
+刷新持久化 ✓）；知乎截图版 **9/9**（发布全流程 25.2s、post_id 落库 ✓）+ API 冒烟 **4/4**。
+原理与边界（patch 方式、mock 扫码、测不到的真实风控）见 [tests/README.md](tests/README.md)。
+
 ## 十、扩展新平台（照抄 150 行）
 
 在 `core/adapters/` 新建 `xxx.py`，实现四个动作：
@@ -466,6 +490,8 @@ dump_dom(page, "csdn_list")     # HTML 存到 data/debug/
 | 登录态判定（掘金、CSDN 实测都能正确识别未登录） | ✅ |
 | 平台间隔限速（8-20s）+ 文章间隔限速（30-90s） | ✅ |
 | **Web 管理界面**（Vue3+Element Plus，真实浏览器点过建/改/存/预览/弹窗，无 JS 报错） | ✅ |
+| **Web UI 登录→发布全流程 E2E**（模拟掘金：点登录→扫码→自动在线→建文→发布→刷新持久化，16/16 每步截图） | ✅ |
+| **知乎适配器 E2E**（模拟知乎 Draft.js 编辑器：注入→发布→/p/{id} 跳转→落库，9/9 截图 + 4/4 API） | ✅ |
 | **响应式适配**（1920 三栏 / 1280 两栏+抽屉 / 820 / 390 单栏+抽屉，实测布局与按钮均未裁切） | ✅ |
 | **验证码三层策略**（免登 API 优先 → 反检测降触发 → 半自动+人工交接，博客园实测转人工路径正确） | ✅ |
 | **Xvfb 自动兜底**（识别僵尸 `DISPLAY=:0`，自动切 `:99`，有头模式在服务器上可用） | ✅ |
@@ -513,10 +539,16 @@ ai-content-hub/
 │  ├─ ai.py                AI 写稿（OpenAI 兼容协议）
 │  ├─ service.py           业务层（AI 调的就是这个）
 │  └─ adapters/
-│     ├─ base.py           适配器接口 + 通用工具
-│     ├─ juejin.py         掘金（浏览器）
+│     ├─ base.py           适配器接口 + 通用工具（HTML 粘贴/表单/cookie 工具）
+│     ├─ juejin.py         掘金（浏览器 + 内容 API）
 │     ├─ csdn.py           CSDN（浏览器）
-│     └─ cnblogs.py        博客园（免浏览器，MetaWeblog）
+│     ├─ cnblogs.py        博客园（免浏览器，MetaWeblog）
+│     ├─ zhihu.py          知乎专栏（Draft.js 编辑器注入）
+│     ├─ jianshu.py        简书（REST API）
+│     ├─ segmentfault.py   思否（草稿 API + token 头）
+│     ├─ bilibili.py       B站专栏（FormData + bili_jct）
+│     ├─ toutiao.py        头条号（contenteditable 注入）
+│     └─ oschina.py        开源中国（UEditor iframe）
 ├─ server/
 │  ├─ static/              Web 界面构建产物（Vue 打包后落这儿）
 │  ├─ api.py               REST API（19 个端点）
@@ -531,6 +563,7 @@ ai-content-hub/
 │  │  └─ styles/main.scss  主题与响应式
 │  ├─ vite.config.js       产物落到 ../server/static
 │  └─ package.json
+├─ tests/                  E2E 测试套件（mock 平台 + 截图流程，见 tests/README.md）
 └─ data/                   数据库 + 浏览器 profile + 验证码现场 + 调试 HTML
 ```
 

@@ -25,3 +25,7 @@ dist/
 build/
 *.tar.gz
 *.zip
+
+# 测试运行产物
+tests/shots/
+tests/__pycache__/
