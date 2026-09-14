@@ -5,21 +5,45 @@
 文档：  http://127.0.0.1:8800/docs
 """
 
+import json
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
 
 from core.service import Hub
 
-app = FastAPI(title="AI 内容中台", version="0.1.0")
+ROOT = Path(__file__).resolve().parent.parent
+
+app = FastAPI(title="AI 内容中台", version="0.2.0")
 hub = Hub(headless=True)
+
+# ---------------- 可选 API 鉴权 ----------------
+# config.json 里配 "api_token": "一串随机字符串" 即启用：
+# 除 /static 与根路径外，所有请求必须带 X-API-Token 头。默认不配 = 不启用（本地用）。
+def _api_token():
+    try:
+        return (json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
+                or {}).get("api_token") or ""
+    except Exception:
+        return ""
+
+
+@app.middleware("http")
+async def _auth(request, call_next):
+    if request.client and request.client.host not in ("127.0.0.1", "::1", "testclient"):
+        token = _api_token()
+        if token and request.headers.get("X-API-Token") != token \
+                and not request.url.path.startswith("/static"):
+            return JSONResponse({"detail": "无效的 API Token"}, status_code=401)
+    return await call_next(request)
 
 STATIC = Path(__file__).resolve().parent / "static"
 
@@ -176,6 +200,20 @@ class LoginIn(BaseModel):
 
 # 登录是长任务（要等人扫码），HTTP 同步等着必超时。放后台线程跑，前端轮询状态。
 LOGIN_TASKS = {}
+LOGIN_TASK_TTL = 600      # 完成后保留 10 分钟供前端最后拉一次，然后清掉
+LOGIN_TASK_MAX = 100      # 上限保护：字典只增不删会慢慢吃内存
+
+
+def _gc_login_tasks():
+    now_ts = time.time()
+    dead = [k for k, v in LOGIN_TASKS.items()
+            if v.get("status") != "running"
+            and now_ts - v.get("finished_at", now_ts) > LOGIN_TASK_TTL]
+    for k in dead:
+        LOGIN_TASKS.pop(k, None)
+    # 超上限时丢最旧的（含 running，极端场景下可接受）
+    while len(LOGIN_TASKS) > LOGIN_TASK_MAX:
+        LOGIN_TASKS.pop(next(iter(LOGIN_TASKS)), None)
 
 
 @app.post("/accounts/{platform}/login")
@@ -196,10 +234,12 @@ def login(platform: str, body: LoginIn):
             ok, msg = hub.login(platform, body.account, body.timeout, body.on_captcha)
             LOGIN_TASKS[task_id].update(ok=ok,
                                         status="success" if ok else "failed",
-                                        message=msg)
+                                        message=msg, finished_at=time.time())
         except Exception as e:
             LOGIN_TASKS[task_id].update(ok=False, status="failed",
-                                        message=f"{type(e).__name__}: {e}")
+                                        message=f"{type(e).__name__}: {e}",
+                                        finished_at=time.time())
+        _gc_login_tasks()
 
     threading.Thread(target=_run, daemon=True).start()
     return {"task_id": task_id, "platform": platform, "status": "running"}

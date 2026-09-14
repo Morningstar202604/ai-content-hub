@@ -483,7 +483,17 @@ class BuiltinBrowser:
         )
         if self.proxy:
             opts["proxy"] = self.proxy
-        self._ctx = self._pw.chromium.launch_persistent_context(**opts)
+        try:
+            self._ctx = self._pw.chromium.launch_persistent_context(**opts)
+        except Exception as e:
+            # 最常见的翻车：同一个 profile 被另一个实例占着（比如正在扫码登录）
+            self._pw.stop()
+            self._pw = None
+            msg = f"浏览器启动失败: {str(e)[:160]}"
+            if "ProcessSingleton" in str(e) or "SingletonLock" in str(e) or "user data dir" in str(e):
+                msg = (f"profile 被占用（{self.platform}/{self.account} 的浏览器正在别处运行，"
+                       f"可能正在扫码登录）。等它结束再试，或删 {self.profile_dir} 重建")
+            raise RuntimeError(msg) from e
         self._ctx.add_init_script(STEALTH_JS)
         return self._ctx
 

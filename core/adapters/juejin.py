@@ -65,7 +65,12 @@ class JuejinAdapter(PlatformAdapter):
     def list_articles(self, page, limit=50):
         uid = self._user_id(page)
         page.goto(self.list_url, timeout=60000, wait_until="domcontentloaded")
-        time.sleep(3)  # SPA 加载
+        # 等 SPA 真把文章行渲染出来再动手，比死等 3 秒又快又稳；
+        # 空账号列表不会出现链接，兜底再给 1 秒收尾
+        try:
+            page.wait_for_selector('a[href*="/editor/"]', timeout=8000)
+        except Exception:
+            time.sleep(1)
 
         # 编辑链接从 DOM 抓，不猜 —— 标题和 href 对齐存起来
         edit_map = {}

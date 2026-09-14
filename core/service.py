@@ -4,7 +4,10 @@
 AI 或者 REST API 调的都是这里的方法，不用碰浏览器细节。
 """
 
+import atexit
 import json
+import random
+import time
 from pathlib import Path
 
 from core import db
@@ -23,6 +26,10 @@ import time
 
 
 class Hub:
+    # 无头浏览器实例池上限。复用省掉每次发布 1~3 秒的启动开销；
+    # 超出后按 LRU 关最旧的（每个实例是一个常驻 Chromium，别开太多）
+    POOL_MAX = 4
+
     def __init__(self, headless=True):
         self.conn = db.connect()
         self.headless = headless
@@ -31,6 +38,56 @@ class Hub:
         self.delay_article = (30, 90)
         # 遇到验证码时怎么处理：handoff=交人工 / abort=直接放弃
         self.on_captcha = "handoff"
+        # 无头浏览器实例池：key=(platform, account)，登录流程不走池（它要独立的有头实例）
+        self._pool = {}
+        self._pool_order = []
+        atexit.register(self.close_all)
+
+    # ------------- 浏览器实例池 -------------
+
+    def _acquire(self, platform, account):
+        """拿（或起）一个 headless 实例。拿到的不关，池里常驻复用。"""
+        key = (platform, account)
+        br = self._pool.get(key)
+        if br is not None:
+            if key in self._pool_order:
+                self._pool_order.remove(key)
+            self._pool_order.append(key)          # touch LRU
+            return br
+        br = BuiltinBrowser(platform, account, headless=self.headless)
+        self._pool[key] = br
+        self._pool_order.append(key)
+        while len(self._pool_order) > self.POOL_MAX:
+            old = self._pool_order.pop(0)
+            victim = self._pool.pop(old, None)
+            if victim:
+                try:
+                    victim.close()
+                except Exception:
+                    pass
+        return br
+
+    def _drop(self, platform, account):
+        """实例疑似崩了：踢出池关掉，下次 _acquire 会起全新的。"""
+        key = (platform, account)
+        victim = self._pool.pop(key, None)
+        if key in self._pool_order:
+            self._pool_order.remove(key)
+        if victim:
+            try:
+                victim.close()
+            except Exception:
+                pass
+
+    def close_all(self):
+        """进程退出前把池里所有浏览器关干净（atexit 兜底，CLI/serve 都生效）。"""
+        for br in list(self._pool.values()):
+            try:
+                br.close()
+            except Exception:
+                pass
+        self._pool.clear()
+        self._pool_order.clear()
 
     # ---------------- 账号 ----------------
 
@@ -48,6 +105,8 @@ class Hub:
                 db.upsert_account(self.conn, platform, account, "-", "offline")
                 return False, str(e)
 
+        # profile 目录是独占的：先释放池里可能占着它的实例，不然有头浏览器起不来
+        self._drop(platform, account)
         br = BuiltinBrowser(platform, account, headless=False)  # 登录必须有头
         try:
             ok, msg = ensure_login(br, ad.login_url, ad.check_auth, timeout=timeout,
@@ -68,7 +127,8 @@ class Hub:
             db.upsert_account(self.conn, platform, account, "-",
                               "logined" if ok else "offline")
             return ok
-        br = BuiltinBrowser(platform, account, headless=self.headless)
+        br = self._acquire(platform, account)
+        page = None
         try:
             page = br.new_page()
             ok = ad.check_auth(page)
@@ -80,8 +140,15 @@ class Hub:
             db.upsert_account(self.conn, platform, account, str(br.profile_dir),
                               "logined" if ok else "offline")
             return ok
+        except Exception:
+            self._drop(platform, account)   # 页面出事：踢出池，下次用全新的
+            raise
         finally:
-            br.close()
+            if page is not None:
+                try:
+                    page.close()
+                except Exception:
+                    pass
 
     def diagnose(self, platform):
         """排查端点：这平台到底该怎么接入、验证码怎么过，一目了然。"""
@@ -115,6 +182,7 @@ class Hub:
         from core.browser import ensure_display
 
         ensure_display()
+        self._drop("cnblogs", account)   # profile 独占，先释放池里的实例
         br = BuiltinBrowser("cnblogs", account, headless=False)  # 登录必须有头
         try:
             r = login_browser(br, username, password,
@@ -134,6 +202,8 @@ class Hub:
             return r
         finally:
             br.close()
+
+    def solve_captcha(self, platform, account="default", wait=180):
         """打开平台页面，如果弹验证码就地处理：先半自动，不行转人工。
 
         这是给"登录时弹了验证码，想单独处理一下"准备的入口。
@@ -142,6 +212,7 @@ class Hub:
         ad = get_adapter(platform)
         if not ad.needs_browser:
             return {"ok": True, "msg": f"{platform} 走免登 API，不会有验证码"}
+        self._drop(platform, account)   # profile 独占，先释放池里的实例
         br = BuiltinBrowser(platform, account, headless=False)
         try:
             page = br.new_page()
@@ -201,28 +272,47 @@ class Hub:
     # ---------------- 发布 / 更新 ----------------
 
     def _with_adapter(self, platform, account, fn):
-        """统一入口：需要浏览器的开浏览器，走协议的直接调。"""
+        """统一入口：需要浏览器的开浏览器，走协议的直接调。
+        浏览器从池里拿，常驻复用；页面用完即关（ctx 保留）。"""
         ad = get_adapter(platform)
         if not ad.needs_browser:
             if not ad.check_auth(None):
                 raise PlatformError(f"{platform} 凭据无效，检查 config.json")
             return fn(ad, None)
 
-        br = BuiltinBrowser(platform, account, headless=self.headless)
-        try:
-            page = br.new_page()
-            # 先把页面带到平台域再发 API：新开的 page 停在 about:blank 上是
-            # null origin，fetch 属于跨域，cookie 带不上还会被 CORS 拦下。
-            # 落到平台自己的页面上，后面的 api_get/api_post 就是同源请求。
+        page = None
+        for attempt in (1, 2):
+            br = self._acquire(platform, account)
             try:
-                page.goto(ad.home_url, timeout=60000, wait_until="domcontentloaded")
-            except Exception:
-                pass  # 首页打不开不拦着纯 API 调用，尽力继续
-            if not ad.check_auth(page):
-                raise PlatformError(f"{platform}({account}) 未登录，先跑 login")
-            return fn(ad, page)
-        finally:
-            br.close()
+                page = br.new_page()
+                # 先把页面带到平台域再发 API：新开的 page 停在 about:blank 上是
+                # null origin，fetch 属于跨域，cookie 带不上还会被 CORS 拦下。
+                # 落到平台自己的页面上，后面的 api_get/api_post 就是同源请求。
+                try:
+                    page.goto(ad.home_url, timeout=60000, wait_until="domcontentloaded")
+                except Exception:
+                    pass  # 首页打不开不拦着纯 API 调用，尽力继续
+                if not ad.check_auth(page):
+                    raise PlatformError(f"{platform}({account}) 未登录，先跑 login")
+                return fn(ad, page)
+            except PlatformError:
+                raise                       # 业务错误（未登录/配置缺失），重试没意义
+            except Exception as e:
+                if attempt == 2:
+                    raise
+                # 像浏览器/页面崩了的错误：踢出池换全新实例再试一次
+                if any(s in str(e) for s in ("Target closed", "Browser has been closed",
+                                             "Session closed", "浏览器启动失败")):
+                    self._drop(platform, account)
+                    continue
+                raise
+            finally:
+                if page is not None:
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
+                    page = None
 
     # ---------------- AI ----------------
 

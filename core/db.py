@@ -79,10 +79,25 @@ def connect(db_path=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     # check_same_thread=False：FastAPI 把同步端点丢进线程池执行，
     # 连接却建在主线程，不开这个开关会报 "created in a thread can only be used in that same thread"
-    conn = sqlite3.connect(str(path), check_same_thread=False)
+    conn = sqlite3.connect(str(path), check_same_thread=False, timeout=30)
     conn.row_factory = sqlite3.Row
+    # WAL：读写不互斥；busy_timeout：多线程同时写时等待而不是立刻报 database is locked
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA)
+    prune_jobs(conn, keep=500)
     return conn
+
+
+def prune_jobs(conn, keep=500):
+    """jobs 表只留最近 keep 条流水，防止无限膨胀（每次启动清一次）。"""
+    try:
+        conn.execute("""DELETE FROM jobs WHERE id NOT IN
+                        (SELECT id FROM jobs ORDER BY id DESC LIMIT ?)""", (keep,))
+        conn.commit()
+    except Exception:
+        pass
 
 
 def now():

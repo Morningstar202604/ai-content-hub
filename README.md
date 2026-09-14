@@ -407,6 +407,17 @@ python cli.py --headed login --platform cnblogs --on-captcha handoff
 适配器里设 `needs_browser = False`，中台会自动跳过浏览器那一步。看到哪个平台有开放 API，
 优先写协议型。
 
+## 性能与稳定性（v0.2.0）
+
+- **浏览器实例池**：无头浏览器按平台常驻复用（LRU 上限 4 个），第二次起发布不再付
+  1~3 秒的启动开销；页面用完即关、实例保活，浏览器崩溃会自动重建重试一次。
+  扫码登录前会自动释放该平台的池实例（profile 目录是独占的，不能两处同时开）。
+- **SQLite WAL 模式** + 30s busy_timeout：多线程并发写不再偶发 `database is locked`。
+- **内存零泄漏**：登录任务字典过期自动清理（完成 10 分钟后回收，上限 100 条）；
+  jobs 流水表每次启动自动裁剪到最近 500 条。
+- **可选 API 鉴权**：config.json 里设 `"api_token": "随机串"` 即启用，所有请求需带
+  `X-API-Token` 头（默认关闭，本机使用不需要）。服务要暴露到局域网/公网时必须开启。
+
 ## 十、扩展新平台（照抄 150 行）
 
 在 `core/adapters/` 新建 `xxx.py`，实现四个动作：
