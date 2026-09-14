@@ -24,6 +24,11 @@ export const api = {
   accounts: () => http.get('/accounts'),
   checkAccount: (platform, account = 'default') =>
     http.get(`/accounts/${platform}/check`, { params: { account } }),
+  // 登录是长任务（等人扫码），异步启动 + 轮询状态
+  startLogin: (platform, account = 'default') =>
+    http.post(`/accounts/${platform}/login`, { account, timeout: 300 }),
+  loginStatus: (platform, taskId) =>
+    http.get(`/accounts/${platform}/login/status`, { params: { task_id: taskId } }),
   refresh: (platform) => http.post(`/refresh/${platform}`),
 
   listArticles: (status) => http.get('/articles', { params: { status } }),

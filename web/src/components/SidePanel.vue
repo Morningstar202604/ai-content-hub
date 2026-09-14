@@ -19,8 +19,14 @@
           >
             <div class="n">{{ p.name }}</div>
             <div class="s">{{ p.needs_browser ? '浏览器' : '免登 API' }}</div>
+            <el-button
+              class="login-btn" size="small" text type="primary"
+              :loading="loginState[p.id]?.status === 'running'"
+              @click.stop="startLogin(p.id)"
+            >{{ loginState[p.id]?.status === 'running' ? '等待扫码…' : '登录' }}</el-button>
           </div>
         </div>
+        <div v-if="loginHint" class="login-hint">{{ loginHint }}</div>
         <div style="margin-top:8px;display:flex;gap:6px">
           <el-button size="small" text @click="selected = platforms.map(p => p.id)">全选</el-button>
           <el-button size="small" text @click="selected = []">清空</el-button>
@@ -94,7 +100,12 @@
 
 <script setup>
 import { ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import { Promotion, RefreshLeft, RefreshRight } from '@element-plus/icons-vue'
+import { api } from '@/api'
+import { useHubStore } from '@/stores/hub'
+
+const hub = useHubStore()
 
 const props = defineProps({
   platforms: { type: Array, default: () => [] },
@@ -108,6 +119,10 @@ const emit = defineEmits(['publish', 'update', 'refresh'])
 const selected = ref([])
 const draftOnly = ref(false)
 const updatable = ref([])
+const loginState = ref({})   // platform -> {status, message}
+
+// 登录成功后顺便提示一下（账号态列表由 hub.loadStatus 刷新）
+const loginHint = ref('')
 
 // 已发布的平台默认勾上，符合"改完直接更新"的直觉
 watch(() => props.pubs, list => {
@@ -120,4 +135,29 @@ function toggle(id) {
 }
 const doPublish = () => emit('publish', [...selected.value], draftOnly.value)
 const doUpdate = () => emit('update', [...updatable.value])
+
+// ---- 登录：点按钮开浏览器去平台登录页，人扫码，程序轮询登录态 ----
+async function startLogin(platform) {
+  if (loginState.value[platform]?.status === 'running') return
+  try {
+    const t = await api.startLogin(platform)
+    loginState.value[platform] = { status: 'running', message: '等待扫码…' }
+    loginHint.value = `已打开${platform}登录页，请在新弹出的浏览器窗口扫码；完成后这里自动变绿。`
+    const timer = setInterval(async () => {
+      try {
+        const s = await api.loginStatus(platform, t.task_id)
+        loginState.value[platform] = s
+        if (s.status === 'success') {
+          clearInterval(timer)
+          loginHint.value = ''
+          ElMessage.success(`${platform} 登录成功，登录态已保存，以后自动复用`)
+          await hub.loadStatus()          // 刷新账号在线状态
+        } else if (s.status === 'failed') {
+          clearInterval(timer)
+          loginHint.value = `${platform} 登录失败：${s.message || '未知原因'}`
+        }
+      } catch { /* 轮询偶发失败忽略，下轮再试 */ }
+    }, 2000)
+  } catch { /* api.js 拦截器已弹错误提示 */ }
+}
 </script>

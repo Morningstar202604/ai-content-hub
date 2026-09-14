@@ -168,6 +168,24 @@ body {
   &.on { border-color: var(--el-color-primary); background: var(--el-color-primary-light-9); }
   .n { font-weight: 500; }
   .s { font-size: 10px; color: var(--el-text-color-secondary); }
+
+  .login-btn {
+    margin-top: 4px;
+    height: 18px;
+    padding: 0 4px;
+    font-size: 10px;
+  }
+}
+
+.login-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--el-color-warning);
+  background: var(--el-color-warning-light-9);
+  border: 1px solid var(--el-color-warning-light-5);
+  border-radius: 6px;
+  padding: 6px 8px;
 }
 
 // ---------- 头部 ----------

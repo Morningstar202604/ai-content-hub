@@ -209,6 +209,13 @@ class Hub:
         br = BuiltinBrowser(platform, account, headless=self.headless)
         try:
             page = br.new_page()
+            # 先把页面带到平台域再发 API：新开的 page 停在 about:blank 上是
+            # null origin，fetch 属于跨域，cookie 带不上还会被 CORS 拦下。
+            # 落到平台自己的页面上，后面的 api_get/api_post 就是同源请求。
+            try:
+                page.goto(ad.home_url, timeout=60000, wait_until="domcontentloaded")
+            except Exception:
+                pass  # 首页打不开不拦着纯 API 调用，尽力继续
             if not ad.check_auth(page):
                 raise PlatformError(f"{platform}({account}) 未登录，先跑 login")
             return fn(ad, page)

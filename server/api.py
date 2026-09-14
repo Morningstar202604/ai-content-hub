@@ -174,11 +174,46 @@ class LoginIn(BaseModel):
     on_captcha: str = "handoff"
 
 
+# 登录是长任务（要等人扫码），HTTP 同步等着必超时。放后台线程跑，前端轮询状态。
+LOGIN_TASKS = {}
+
+
 @app.post("/accounts/{platform}/login")
 def login(platform: str, body: LoginIn):
-    """扫码/过验证登录。会开一个有头浏览器，你得在旁边看着。"""
-    ok, msg = hub.login(platform, body.account, body.timeout, body.on_captcha)
-    return {"platform": platform, "ok": ok, "message": msg}
+    """异步启动登录：立即返回 task_id，前端轮询 /login/status。
+    会开一个有头浏览器，去平台登录页，等你扫码；登录态落盘后任务结束。"""
+    import threading
+    import uuid
+    task_id = uuid.uuid4().hex[:10]
+    LOGIN_TASKS[task_id] = {
+        "task_id": task_id, "platform": platform, "account": body.account,
+        "status": "running",
+        "message": "浏览器已打开平台登录页，等待扫码/登录…",
+    }
+
+    def _run():
+        try:
+            ok, msg = hub.login(platform, body.account, body.timeout, body.on_captcha)
+            LOGIN_TASKS[task_id].update(ok=ok,
+                                        status="success" if ok else "failed",
+                                        message=msg)
+        except Exception as e:
+            LOGIN_TASKS[task_id].update(ok=False, status="failed",
+                                        message=f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"task_id": task_id, "platform": platform, "status": "running"}
+
+
+@app.get("/accounts/{platform}/login/status")
+def login_status(platform: str, task_id: str = None):
+    """轮询登录任务状态：running / success / failed。"""
+    if task_id and task_id in LOGIN_TASKS:
+        return LOGIN_TASKS[task_id]
+    for t in reversed(list(LOGIN_TASKS.values())):
+        if t["platform"] == platform:
+            return t
+    return {"platform": platform, "status": "idle", "message": "没有登录任务"}
 
 
 @app.get("/accounts/{platform}/diagnose")
