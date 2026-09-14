@@ -1,7 +1,8 @@
-# AI 内容中台（ai-content-hub）
+# 一稿 YiGao · AI 内容中台（ai-content-hub）
 
-> 文章存在你自己的库里，AI 通过 API/MCP 全权管理：写、改、发、更新、看账号全部内容。
+> **一稿写，全网发。** 文章存在你自己的库里，AI 通过 API/MCP 全权管理：写、改、发、更新、看账号全部内容。
 > **自带内置浏览器**，扫码登录一次，之后程序自己跑，不依赖你日常的 Chrome/Edge 开着。
+> 自带品牌化 Web 管理界面（暗色 / 靛紫渐变 / 全套微交互）。
 
 <p>
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
