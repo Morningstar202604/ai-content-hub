@@ -1,5 +1,8 @@
 <template>
   <div class="app">
+    <!-- 全局动作进度条：加载/保存/发布任一进行中就亮 -->
+    <div class="top-progress" :class="{ show: hub.loadingList || hub.saving || hub.publishing }" />
+
     <AppHeader
       :stats="hub.stats"
       :ai-ready="hub.aiReady"
@@ -21,6 +24,7 @@
         :current-id="hub.currentId"
         :loading="hub.loadingList"
         @open="onOpen"
+        @new-article="hub.newArticle()"
       />
 
       <ArticleEditor
@@ -34,8 +38,15 @@
         @ai-rewrite="onRewrite"
         @ai-polish="onPolish"
       />
-      <div v-else class="pane" style="align-items:center;justify-content:center">
-        <el-empty description="左边选一篇，或者新建一篇" />
+      <div v-else class="pane pane-center">
+        <EmptyState
+          :px="168"
+          title="开始写一稿"
+          desc="选一篇文章继续编辑，或者新建一篇，写完勾选平台一键发全网"
+        >
+          <el-button type="primary" :icon="Plus" @click="hub.newArticle()">新建文章</el-button>
+          <el-button :icon="MagicStick" @click="aiDialog = true">让 AI 写</el-button>
+        </EmptyState>
       </div>
 
       <SidePanel
@@ -94,7 +105,7 @@
 <script setup>
 import { ref, onMounted, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
-import { Promotion } from '@element-plus/icons-vue'
+import { Promotion, Plus, MagicStick } from '@element-plus/icons-vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useHubStore } from '@/stores/hub'
 import { api } from '@/api'
@@ -103,6 +114,7 @@ import ArticleList from '@/components/ArticleList.vue'
 import ArticleEditor from '@/components/ArticleEditor.vue'
 import SidePanel from '@/components/SidePanel.vue'
 import AIWriteDialog from '@/components/AIWriteDialog.vue'
+import EmptyState from '@/components/EmptyState.vue'
 
 const hub = useHubStore()
 const { listDocked, sideDocked } = useBreakpoint()
@@ -158,7 +170,12 @@ async function onRefresh() {
 }
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+.pane-center {
+  align-items: center;
+  justify-content: center;
+}
+
 .fab {
   position: fixed;
   right: 18px;
@@ -167,15 +184,18 @@ async function onRefresh() {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 12px 20px;
-  border-radius: 24px;
-  background: var(--el-color-primary);
+  padding: 12px 22px;
+  border-radius: 26px;
+  background: linear-gradient(135deg, #6D5CFF, #C44BFF);
   color: #fff;
   font-size: 14px;
-  font-weight: 600;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, .45);
+  font-weight: 650;
+  box-shadow: 0 8px 26px rgba(124, 92, 255, .5);
   cursor: pointer;
   user-select: none;
+  transition: all .2s cubic-bezier(.22, 1, .36, 1);
+
+  &:hover { transform: translateY(-2px); box-shadow: 0 12px 30px rgba(124, 92, 255, .65); }
+  &:active { transform: scale(.96); }
 }
-.fab:active { transform: scale(.96); }
 </style>

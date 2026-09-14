@@ -2,7 +2,7 @@
   <div class="pane" style="height:100%">
     <div class="pane-head editor-head">
       <span class="title">{{ article.id ? '#' + article.id : '新文章' }}</span>
-      <el-tag v-if="dirty" size="small" type="warning" effect="dark">未保存</el-tag>
+      <el-tag v-if="dirty" size="small" type="warning" effect="dark" class="dirty-tag">未保存</el-tag>
       <span class="spacer" />
       <el-radio-group v-model="view" size="small" class="view-switch">
         <el-radio-button value="edit">编辑</el-radio-button>
@@ -25,7 +25,7 @@
         v-model="article.title"
         size="large"
         placeholder="文章标题"
-        style="font-size:17px;font-weight:600"
+        class="title-input"
         @input="touch"
       />
 
@@ -46,7 +46,7 @@
           <el-option label="归档" value="archived" />
         </el-select>
         <span class="spacer" />
-        <span style="font-size:12px;color:var(--el-text-color-secondary)">
+        <span class="meta-chip">
           {{ chars }} 字 · 约 {{ Math.ceil(chars / 350) }} 分钟读完
         </span>
       </div>
@@ -93,3 +93,14 @@ watch(() => window.innerWidth, w => {
   if (w < 768 && view.value === 'split') view.value = 'edit'
 })
 </script>
+
+<style scoped>
+.dirty-tag {
+  animation: popIn .25s var(--ease-out);
+}
+.title-input :deep(.el-input__inner) {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: .2px;
+}
+</style>
