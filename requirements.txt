@@ -1,0 +1,8 @@
+# 后端
+fastapi>=0.110
+uvicorn>=0.27
+pydantic>=2.5
+requests>=2.31
+
+# 浏览器自动化（装完记得：playwright install chromium）
+playwright>=1.48

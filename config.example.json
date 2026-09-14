@@ -1,0 +1,25 @@
+{
+  "_说明": "复制为 config.json 后填写。这个文件里全是凭据，别进 git。",
+
+  "AI_API_KEY": "sk-xxx",
+  "AI_BASE_URL": "https://api.deepseek.com/v1",
+  "AI_MODEL": "deepseek-chat",
+
+  "_AI_BASE_URL_备选": {
+    "DeepSeek": "https://api.deepseek.com/v1",
+    "通义千问": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "豆包": "https://ark.cn-beijing.volces.com/api/v3",
+    "Kimi": "https://api.moonshot.cn/v1",
+    "智谱": "https://open.bigmodel.cn/api/paas/v4",
+    "本地 Ollama": "http://127.0.0.1:11434/v1"
+  },
+
+  "platforms": {
+    "cnblogs": {
+      "_说明": "推荐一条命令自动填充，不用手抄：python cli.py --headed bootstrap-cnblogs --username 登录名 --password 密码",
+      "endpoint": "https://rpc.cnblogs.com/metaweblog/你的博客地址名",
+      "username": "你的登录用户名",
+      "token": "MetaWeblog 访问令牌（不是登录密码，登录密码无效）"
+    }
+  }
+}
