@@ -3,6 +3,7 @@ fastapi>=0.110
 uvicorn>=0.27
 pydantic>=2.5
 requests>=2.31
+markdown>=3.5    # 知乎/B站/头条等富文本编辑器发布时 Markdown 转 HTML
 
 # 浏览器自动化（装完记得：playwright install chromium）
 playwright>=1.48

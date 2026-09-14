@@ -16,6 +16,37 @@
 import json
 import time
 
+import markdown as _md_lib
+
+
+def md_to_html(text):
+    """Markdown 转 HTML。知乎/B站/头条/开源中国这类富文本编辑器粘贴时用。"""
+    if not text:
+        return ""
+    try:
+        return _md_lib.markdown(text, extensions=["fenced_code", "tables", "nl2br"])
+    except Exception:
+        # 转不了就整段塞进 <pre>，至少内容不丢
+        import html as _html
+        return f"<pre>{_html.escape(text)}</pre>"
+
+
+# 通用"往富文本编辑器粘贴 HTML"的 JS。知乎(Draft.js)/头条/开源中国(UEditor) 都吃这套：
+# 构造 ClipboardEvent 带 text/html 数据 → 编辑器自己解析富文本，比 setValue 稳。
+PASTE_HTML_JS = """([sel, html]) => {
+    const editor = document.querySelector(sel);
+    if (!editor) return false;
+    editor.focus();
+    const ev = new ClipboardEvent('paste', {
+        bubbles: true, cancelable: true, clipboardData: new DataTransfer(),
+    });
+    ev.clipboardData.setData('text/html', html);
+    editor.dispatchEvent(ev);
+    editor.dispatchEvent(new Event('input', {bubbles: true}));
+    editor.dispatchEvent(new Event('change', {bubbles: true}));
+    return true;
+}"""
+
 
 class PlatformError(Exception):
     pass
@@ -63,17 +94,17 @@ class PlatformAdapter:
         except Exception:
             raise PlatformError(f"响应不是 JSON: {res['text'][:200]}")
 
-    def api_post(self, page, url, payload):
-        js = """async ([u, body]) => {
+    def api_post(self, page, url, payload, headers=None):
+        js = """async ([u, body, hdrs]) => {
             const r = await fetch(u, {
                 method: 'POST',
                 credentials: 'include',
-                headers: {'content-type': 'application/json'},
+                headers: Object.assign({'content-type': 'application/json'}, hdrs || {}),
                 body: JSON.stringify(body)
             });
             return {status: r.status, text: await r.text()};
         }"""
-        res = page.evaluate(js, [url, payload])
+        res = page.evaluate(js, [url, payload, headers])
         try:
             data = json.loads(res["text"])
         except Exception:
@@ -81,6 +112,50 @@ class PlatformAdapter:
         if res["status"] != 200 or (isinstance(data, dict) and data.get("err_no") not in (0, None)):
             raise PlatformError(f"POST {url} 失败: {res['text'][:200]}")
         return data
+
+    def api_put(self, page, url, payload, headers=None):
+        """PUT JSON。简书更新文章用。"""
+        js = """async ([u, body, hdrs]) => {
+            const r = await fetch(u, {
+                method: 'PUT',
+                credentials: 'include',
+                headers: Object.assign({'content-type': 'application/json'}, hdrs || {}),
+                body: JSON.stringify(body)
+            });
+            return {status: r.status, text: await r.text()};
+        }"""
+        res = page.evaluate(js, [url, payload, headers])
+        try:
+            data = json.loads(res["text"])
+        except Exception:
+            raise PlatformError(f"响应不是 JSON: {res['text'][:200]}")
+        if res["status"] != 200:
+            raise PlatformError(f"PUT {url} 失败: {res['text'][:200]}")
+        return data
+
+    def api_post_form(self, page, url, fields):
+        """multipart/FormData POST。B站专栏草稿用（JSON 会拒）。fields: {str: str}"""
+        js = """async ([u, obj]) => {
+            const fd = new FormData();
+            for (const [k, v] of Object.entries(obj)) fd.append(k, v);
+            const r = await fetch(u, {method: 'POST', credentials: 'include', body: fd});
+            return {status: r.status, text: await r.text()};
+        }"""
+        res = page.evaluate(js, [url, {k: str(v) for k, v in fields.items()}])
+        try:
+            data = json.loads(res["text"])
+        except Exception:
+            raise PlatformError(f"响应不是 JSON: {res['text'][:200]}")
+        if res["status"] != 200 or (isinstance(data, dict) and data.get("code") not in (0, None)):
+            raise PlatformError(f"POST {url} 失败: {res['text'][:200]}")
+        return data
+
+    def get_cookie(self, page, name):
+        return page.evaluate(
+            """(n) => {
+                const m = document.cookie.split('; ').find(c => c.startsWith(n + '='));
+                return m ? m.slice(n.length + 1) : '';
+            }""", name)
 
     def set_editor_content(self, page, content, editor_sel=".CodeMirror"):
         """

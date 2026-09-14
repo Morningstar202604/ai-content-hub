@@ -14,7 +14,9 @@ from core.browser import BuiltinBrowser, ensure_login, CaptchaPolicy, wait_human
 ROOT = Path(__file__).resolve().parent.parent
 
 # 导入即注册
-from core.adapters import juejin, csdn, cnblogs  # noqa: F401
+from core.adapters import (  # noqa: F401
+    bilibili, cnblogs, csdn, jianshu, juejin, oschina, segmentfault, toutiao, zhihu,
+)
 
 import random
 import time

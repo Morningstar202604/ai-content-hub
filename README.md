@@ -10,7 +10,22 @@
   <img alt="mcp" src="https://img.shields.io/badge/AI-MCP-orange">
 </p>
 
-**已支持平台**：掘金 · CSDN（浏览器自动化）｜ 博客园（MetaWeblog 协议，免浏览器）· 扩展新平台约 150 行
+**已支持平台（9 个）**：
+
+| 平台 | 方式 | 发布 | 原地更新 | 抓取列表 | 备注 |
+|---|---|---|---|---|---|
+| 掘金 | 浏览器 + 页面 API | ✅ | ✅ | ✅ | |
+| CSDN | 浏览器 | ✅ | ✅ | ✅ | |
+| 博客园 | MetaWeblog 协议 | ✅ | ✅ | ✅ | **免浏览器、零验证码** |
+| 知乎 | 浏览器 UI 注入 | ✅ | ✅ | — | 扫码登录；发布后自动抓文章 ID |
+| 简书 | 作者后台 API | ✅ | ✅ | ✅ | cookie 即可，最稳 |
+| 思否 SegmentFault | API 建稿 + UI 发布 | ✅ | ✅ | — | |
+| B站专栏 | 创作 API（FormData） | ✅ 草稿 | ✅ 草稿 | — | 发表需到编辑页二次选分区 |
+| 头条号 | 浏览器 UI 注入 | ✅ | — | — | 标题限 30 字 |
+| 开源中国 | 浏览器 UI 注入 | ✅ | — | — | UEditor 富文本 |
+
+> 知乎 / 头条 / 开源中国的发布选择器参考社区实测（MultiPost-Extension 等），平台改版后跑
+> `python cli.py dump-dom --platform xxx` 重抓结构即可。扩一个新平台照着任一适配器抄 150 行。
 
 ## 这是什么 / 不是什么
 
@@ -50,7 +65,7 @@ python cli.py --headed bootstrap-cnblogs --username 登录名 --password 密码 
 | AI 全权管理 | 只能"发" | 增删改查 + 列表 + 状态 |
 | 做成独立程序 | 做不到，必须寄生 | 天然独立，能打包分发 |
 
-代价：平台适配要自己写。目前**掘金、CSDN（浏览器）**和**博客园（免浏览器）**已实现，
+代价：平台适配要自己写。目前 9 个平台已实现（见上方平台矩阵），
 扩平台照着 150 行抄一个即可。文章可以由 AI 直接写（`core/ai.py`），接任何 OpenAI 兼容模型。
 
 ---
@@ -71,7 +86,7 @@ python cli.py --headed bootstrap-cnblogs --username 登录名 --password 密码 
               │
      内置 Chromium（每平台一个持久化 profile）
               │
-     适配器：掘金 / CSDN / （你的下一个平台）
+     适配器：掘金 / CSDN / 知乎 / 简书 / 思否 / B站 / 头条 / 开源中国 /（你的下一个平台）
               │
      发布    列表    原地更新
 ```
@@ -256,7 +271,10 @@ python cli.py serve        # http://127.0.0.1:8800/docs
 |---|---|---|
 | 博客园 | MetaWeblog XML-RPC + 访问令牌 | **零验证码** |
 | 掘金 | 有内容 OpenAPI（需申请） | 走 API 则零 |
-| CSDN / 其他 | 无，只能浏览器 | 走 L2/L3 |
+| 简书 | 作者后台 API（cookie 即可，本项目已用） | 仅登录时 |
+| B站专栏 | 创作 API（本项目已用，cookie+csrf） | 仅登录时 |
+| 思否 | 草稿 API（本项目已用） | 仅登录时 |
+| CSDN / 知乎 / 头条 / 开源中国 | 无公开发布 API，只能浏览器 | 走 L2/L3 |
 
 ```bash
 python cli.py diagnose --platform cnblogs    # 看看这平台推荐怎么接
