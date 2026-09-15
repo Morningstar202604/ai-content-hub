@@ -1,17 +1,51 @@
-# 一稿 YiGao · AI 内容中台（ai-content-hub）
+# 一稿 YiGao · AI 内容中台
 
-> **一稿写，全网发。** 文章存在你自己的库里，AI 通过 API/MCP 全权管理：写、改、发、更新、看账号全部内容。
-> **自带内置浏览器**，扫码登录一次，之后程序自己跑，不依赖你日常的 Chrome/Edge 开着。
-> 自带品牌化 Web 管理界面（暗色 / 靛紫渐变 / 全套微交互）。
+> **一稿写，全网发。** 文章存在你自己的库里，AI 通过 API / MCP 全权管理：写、改、发、更新、看账号全部内容。
+> 自带内置浏览器，扫码登录一次就长期在线，不依赖你日常的 Chrome / Edge 开着。
 
 <p>
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-blue">
   <img alt="fastapi" src="https://img.shields.io/badge/API-FastAPI-teal">
   <img alt="mcp" src="https://img.shields.io/badge/AI-MCP-orange">
+  <img alt="platforms" src="https://img.shields.io/badge/platforms-9-blueviolet">
 </p>
 
-**已支持平台（9 个）**：
+![一稿 · 主界面](docs/screenshots/01-home.png)
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/02-editor.png" alt="编辑器"><br><sub>Markdown 编辑 / 分屏 / 预览三态，写完直接选平台发</sub></td>
+    <td width="50%"><img src="docs/screenshots/03-publish.png" alt="发布"><br><sub>一键多发，发布实例落库，可原地更新已发文章</sub></td>
+  </tr>
+</table>
+
+## 30 秒看懂它能干什么
+
+- **多平台一键分发**：一篇文章，勾选平台，同时发到 **9 个平台**（掘金 / CSDN / 博客园 / 知乎 / 简书 / 思否 / B站专栏 / 头条号 / 开源中国）。
+- **原地更新，不是重发**：改了文章，它去打开各平台的**编辑页**改原文，URL 不变、评论点赞都在。
+- **AI 全权接管**：内置 MCP Server + REST API，Claude 或任何脚本都能直接建文章、发布、抓取账号里的文章。
+- **完全自托管**：文章库、登录态、浏览器 profile 全在你自己的机器上，不依赖任何第三方 SaaS。
+- **自带 Web 管理界面**：暗色极简界面，响应式适配桌面 / 平板 / 手机。
+
+## 快速开始
+
+```bash
+git clone https://gitcode.com/badhope/ai-content-hub.git
+cd ai-content-hub
+pip install -r requirements.txt
+playwright install chromium
+
+cp config.example.json config.json      # 填 AI key（可选，不填不影响发布功能）
+
+# 扫码登录（有桌面的机器上跑一次，登录态长期有效）
+python cli.py --headed login --platform juejin
+
+# 起服务，打开 http://127.0.0.1:8800
+python cli.py serve
+```
+
+## 支持平台（9 个）
 
 | 平台 | 方式 | 发布 | 原地更新 | 抓取列表 | 备注 |
 |---|---|---|---|---|---|
@@ -30,29 +64,9 @@
 
 ## 这是什么 / 不是什么
 
-- ✅ 是：**自托管**的多平台内容分发中台。文章库、发布、原地更新、AI 写稿，全部在你自己机器上，不依赖任何第三方 SaaS。
+- ✅ 是：**自托管**的多平台内容分发中台。文章库、发布、原地更新、AI 写稿，全部在你自己机器上。
 - ✅ 是：给 AI 程序用的**内容 API**。MCP Server + REST API 双入口，Claude / 任意脚本都能直接调用。
 - ❌ 不是：群发垃圾内容的工具。发布内置限速（平台间隔 8-20s、文章间隔 30-90s），请在平台规则内使用。
-
-## 三分钟上手
-
-```bash
-git clone https://gitcode.com/badhope/ai-content-hub.git
-cd ai-content-hub
-pip install -r requirements.txt
-playwright install chromium
-
-cp config.example.json config.json      # 填 AI key（可选，不填不影响发布功能）
-python cli.py create --title "第一篇" --content "# Hello"
-python cli.py serve                     # 打开 http://127.0.0.1:8800/static/index.html
-```
-
-登录各平台（有桌面的机器上跑一次，登录态长期有效）：
-
-```bash
-python cli.py --headed login --platform juejin      # 扫码
-python cli.py --headed bootstrap-cnblogs --username 登录名 --password 密码   # 博客园自动抠令牌
-```
 
 ---
 
@@ -96,12 +110,7 @@ python cli.py --headed bootstrap-cnblogs --username 登录名 --password 密码 
 
 ---
 
-## 三、五分钟跑起来
-
-```bash
-pip install -r requirements.txt
-playwright install chromium
-```
+## 三、命令行用法
 
 ```bash
 # 1) 扫码登录（会弹出浏览器窗口，扫一次就存住了）
@@ -131,23 +140,26 @@ python cli.py status
 
 启动服务后浏览器打开 `http://127.0.0.1:8800`。左边文章列表，中间编辑区，右边发布面板。
 
+界面走**极简黑白**设计：中性灰阶打底、单一强调色、强字号层级，顶栏是分组工具条
+（品牌 / 统计 / AI 状态 / 主操作），编辑器为绝对主角。
+
 **前端技术栈**（`web/` 目录，独立工程）：
 
 | 项 | 选型 | 为什么 |
 |---|---|---|
-| 框架 | Vue 3 `<script setup>` | 组合式 API，逻辑按功能聚在一处，不用满文件找 data |
-| UI 库 | Element Plus 2.9 + 暗色主题 | 表格/抽屉/表单/消息全有，不用自己搓组件 |
+| 框架 | Vue 3 `<script setup>` | 组合式 API，逻辑按功能聚在一处 |
+| UI 库 | Element Plus（**按需引入**） | 只打包用到的组件，CSS 从 379KB 降到 148KB |
 | 状态 | Pinia | 文章、发布实例、平台、统计分域管理 |
 | 请求 | axios + 拦截器 | 统一错误提示，不用每个调用点写 try/catch |
 | 渲染 | markdown-it | 编辑/分屏/预览三态，代码块和表格都对 |
-| 构建 | Vite 6 | 秒级热更新，产物已按 vendor/ui/md 分包 |
+| 构建 | Vite 6 | 秒级热更新，产物按 vue / element / md 分包 |
 
 **响应式适配**（窗口一变自动重排，不是简单的媒体查询隐藏）：
 
 | 宽度 | 布局 | 交互 |
 |---|---|---|
-| ≥1440 | 三栏常驻（列表+编辑+发布） | 全展开 |
-| 1024–1440 | 两栏（列表+编辑） | 发布面板 → 右侧抽屉 + 浮动按钮 |
+| ≥1280 | 三栏常驻（列表+编辑+发布） | 全展开 |
+| 1024–1280 | 两栏（列表+编辑） | 发布面板 → 右侧抽屉 + 浮动按钮 |
 | 768–1024 | 两栏（列表+编辑） | 同上，工具条收紧 |
 | <768 | 单栏（仅编辑区） | 列表 → 左侧抽屉；工具条换行，按钮只留图标 |
 
@@ -408,7 +420,7 @@ python cli.py --headed login --platform cnblogs --on-captcha handoff
 适配器里设 `needs_browser = False`，中台会自动跳过浏览器那一步。看到哪个平台有开放 API，
 优先写协议型。
 
-## 性能与稳定性（v0.2.0）
+## 十、性能与稳定性
 
 - **浏览器实例池**：无头浏览器按平台常驻复用（LRU 上限 4 个），第二次起发布不再付
   1~3 秒的启动开销；页面用完即关、实例保活，浏览器崩溃会自动重建重试一次。
@@ -419,7 +431,7 @@ python cli.py --headed login --platform cnblogs --on-captcha handoff
 - **可选 API 鉴权**：config.json 里设 `"api_token": "随机串"` 即启用，所有请求需带
   `X-API-Token` 头（默认关闭，本机使用不需要）。服务要暴露到局域网/公网时必须开启。
 
-## 测试：E2E 全模拟套件（不碰真号）
+## 十一、测试：E2E 全模拟套件（不碰真号）
 
 `tests/` 目录自带一套本地模拟平台（Flask mock，接口与页面元素和真实平台同构），
 全流程验证适配器的**真实代码路径**——真实选择器、真实接口调用、真实跳转判定，
@@ -443,7 +455,7 @@ python tests/e2e_zhihu_screenshots.py [截图目录]
 刷新持久化 ✓）；知乎截图版 **9/9**（发布全流程 25.2s、post_id 落库 ✓）+ API 冒烟 **4/4**。
 原理与边界（patch 方式、mock 扫码、测不到的真实风控）见 [tests/README.md](tests/README.md)。
 
-## 十、扩展新平台（照抄 150 行）
+## 十二、扩展新平台（照抄 150 行）
 
 在 `core/adapters/` 新建 `xxx.py`，实现四个动作：
 
@@ -476,42 +488,24 @@ dump_dom(page, "csdn_list")     # HTML 存到 data/debug/
 
 ---
 
-## 十一、当前状态与已知限制
+## 十三、当前状态与已知限制
 
 **已跑通（沙箱实测）**：
 
-| 模块 | 状态 |
+| 能力 | 状态 |
 |---|---|
-| 数据层（4 张表 + 改内容自动标记待同步） | ✅ |
-| 业务层（导入/发布/更新/同步/刷新） | ✅ |
-| **AI 写稿**（用本地 mock 服务端到端跑通：标题抽取、摘要、标签、改写、润色） | ✅ |
-| REST API（15 个端点） | ✅ |
-| MCP Server（initialize / tools.list / tools.call，13 个工具） | ✅ |
-| 内置浏览器 + 反检测（8 项指纹实测：webdriver 隐藏、WebGL 伪装成 Intel、硬件/插件/语言全补齐） | ✅ |
-| 登录态判定（掘金、CSDN 实测都能正确识别未登录） | ✅ |
-| 平台间隔限速（8-20s）+ 文章间隔限速（30-90s） | ✅ |
-| **Web 管理界面**（Vue3+Element Plus，真实浏览器点过建/改/存/预览/弹窗，无 JS 报错） | ✅ |
-| **Web UI 登录→发布全流程 E2E**（模拟掘金：点登录→扫码→自动在线→建文→发布→刷新持久化，16/16 每步截图） | ✅ |
-| **知乎适配器 E2E**（模拟知乎 Draft.js 编辑器：注入→发布→/p/{id} 跳转→落库，9/9 截图 + 4/4 API） | ✅ |
-| **响应式适配**（1920 三栏 / 1280 两栏+抽屉 / 820 / 390 单栏+抽屉，实测布局与按钮均未裁切） | ✅ |
-| **验证码三层策略**（免登 API 优先 → 反检测降触发 → 半自动+人工交接，博客园实测转人工路径正确） | ✅ |
-| **Xvfb 自动兜底**（识别僵尸 `DISPLAY=:0`，自动切 `:99`，有头模式在服务器上可用） | ✅ |
-| **博客园登录引导**（`bootstrap-cnblogs`：填账号密码 → 自动过阿里复选框 → 登录成功 → 自动抠 MetaWeblog 令牌写 config，实测链路全通） | ✅ |
-| **全面体检（交付前）**：CLI 16 子命令 argparse 冒烟 / 数据链路 建-改-查-搜-导 / AI 链路（mock 服务端到端：写稿→标题解析→摘要→标签→改写→润色）/ REST API 读写端点 / MCP（initialize + 13 工具 + tools/call）/ 前端构建产物完整性 / 各平台凭据缺失时的报错直指要害 | ✅ |
+| 数据层 / 业务层（文章库、发布实例、任务流水、改内容自动标待同步） | ✅ |
+| AI 写稿（本地 mock 端到端：标题抽取、摘要、标签、改写、润色） | ✅ |
+| REST API（25 个端点）+ MCP Server（13 个工具，Claude 直连） | ✅ |
+| 内置浏览器 + 反检测（8 项指纹：webdriver 隐藏、WebGL 伪装等） | ✅ |
+| Web 管理界面（极简黑白，真实浏览器点过建/改/存/预览/发布，无 JS 报错） | ✅ |
+| Web UI 登录→发布全流程 E2E（掘金 16/16 · 知乎 9/9，每步截图留证） | ✅ |
+| 响应式适配（≥1280 三栏 / 1024-1280 两栏+抽屉 / 平板 / 手机，实测无裁切） | ✅ |
+| 验证码三层策略 + Xvfb 自动兜底 + 博客园自动抠 MetaWeblog 令牌 | ✅ |
 
-**需要真实账号跑一次才能定论**：发布、原地更新、列表这三个动作依赖真实登录态，沙箱里没账号没法端到端验证。掘金的 API 路径、CSDN 的编辑器选择器都是按公开结构写的，**第一次实跑可能需要微调**。
-
-**博客园实测结论（重要）**：登录链路已全通——表单填充、阿里复选框自动过、
-提交到服务端、读取真实错误，全部实测可用。**唯一未闭环的是登录身份**：
-用数字用户 ID（非登录名）实测被服务端判 `用户名或密码错误`。
-换成正确的登录用户名即可一键跑通 `bootstrap-cnblogs`，无代码改动。
-详见「第八章」。
-
-建议第一次先：
-```bash
-python cli.py publish --id 1 --platforms juejin --draft   # 只发草稿箱，安全
-```
-确认草稿正常，再关掉 `--draft` 正式发。
+> **需要真实账号跑一次才能定论**：发布、原地更新、列表依赖真实登录态，沙箱里没账号无法端到端验证。
+> 掘金的 API 路径、CSDN 的编辑器选择器按公开结构编写，**第一次实跑可能需要微调**。
+> 建议先 `python cli.py publish --id 1 --platforms juejin --draft` 只发草稿箱，确认无误再正式发。
 
 **已知限制**：
 - 平台风控：程序内置了平台间隔（8-20s）和文章间隔（30-90s）限速，别调太小
@@ -527,11 +521,11 @@ python cli.py publish --id 1 --platforms juejin --draft   # 只发草稿箱，�
 
 ---
 
-## 十二、目录结构
+## 十四、目录结构
 
 ```
 ai-content-hub/
-├─ cli.py                  命令行入口（14 个命令）
+├─ cli.py                  命令行入口（16 个命令）
 ├─ config.example.json     凭据模板（复制为 config.json）
 ├─ core/
 │  ├─ db.py                数据层（SQLite）
@@ -552,7 +546,7 @@ ai-content-hub/
 │     └─ oschina.py        开源中国（UEditor iframe）
 ├─ server/
 │  ├─ static/              Web 界面构建产物（Vue 打包后落这儿）
-│  ├─ api.py               REST API（19 个端点）
+│  ├─ api.py               REST API（25 个端点）
 │  └─ mcp_server.py        MCP Server（AI 直连，13 个工具）
 ├─ web/                    前端工程（Vue3 + Element Plus + Vite）
 │  ├─ src/
@@ -565,6 +559,7 @@ ai-content-hub/
 │  ├─ vite.config.js       产物落到 ../server/static
 │  └─ package.json
 ├─ tests/                  E2E 测试套件（mock 平台 + 截图流程，见 tests/README.md）
+├─ docs/screenshots/       README 配图
 └─ data/                   数据库 + 浏览器 profile + 验证码现场 + 调试 HTML
 ```
 
@@ -573,12 +568,12 @@ ai-content-hub/
 
 ---
 
-## 十三、参与贡献
+## 十五、参与贡献
 
 欢迎 Issue / PR。改平台适配器前先跑一下 `python cli.py diagnose --platform xxx`，
 选择器失效时用 `dump_dom()` 存现场比猜快十倍。
 
-## 十四、AI 使用说明（透明度声明）
+## 十六、AI 使用说明（透明度声明）
 
 - 本项目的**产品设计、架构与代码由人工主导完成，AI 辅助编码与测试**；
 - 项目自身的定位是"AI 辅助内容创作"工具：文章由 AI 起草、人审核后发布，
