@@ -20,7 +20,7 @@
       </el-button>
     </div>
 
-    <div class="pane-body" style="padding:12px;display:flex;flex-direction:column;gap:10px">
+    <div class="pane-body editor-body">
       <el-input
         v-model="article.title"
         size="large"
@@ -37,9 +37,9 @@
         @input="touch"
       />
 
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <el-input v-model="article.tags" placeholder="标签，逗号分隔" style="max-width:320px" :prefix-icon="PriceTag" @input="touch" />
-        <el-select v-model="article.status" style="width:120px" @change="touch">
+      <div class="meta-row">
+        <el-input v-model="article.tags" placeholder="标签，逗号分隔" class="tags-input" :prefix-icon="PriceTag" @input="touch" />
+        <el-select v-model="article.status" class="status-sel" @change="touch">
           <el-option label="草稿" value="draft" />
           <el-option label="已发布" value="published" />
           <el-option label="待审" value="review" />
@@ -51,7 +51,7 @@
         </span>
       </div>
 
-      <div class="split-view" :class="{ single: view !== 'split' }" style="flex:1;min-height:360px">
+      <div class="split-view" :class="{ single: view !== 'split' }">
         <el-input
           v-if="view !== 'preview'"
           v-model="article.content_md"
@@ -71,6 +71,7 @@
 import { computed, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { Check, PriceTag, Aim, Brush } from '@element-plus/icons-vue'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 
 const props = defineProps({
   article: { type: Object, default: null },
@@ -80,27 +81,46 @@ const props = defineProps({
 })
 const emit = defineEmits(['save', 'touch', 'ai-rewrite', 'ai-polish'])
 
-const view = ref('split')
+const { isMobile } = useBreakpoint()
+// 手机默认只看编辑，分屏两栏根本没法用；桌面默认分屏
+const view = ref(isMobile.value ? 'edit' : 'split')
+// 用响应式断点监听：从桌面拖窄到手机时，若还停在分屏就切回编辑
+watch(isMobile, m => { if (m && view.value === 'split') view.value = 'edit' })
+
 const md = new MarkdownIt({ html: true, linkify: true, breaks: false })
 const rendered = computed(() =>
   md.render(props.article?.content_md || '')
 )
 const chars = computed(() => (props.article?.content_md || '').length)
 const touch = () => emit('touch')
-
-// 手机默认只看编辑，分屏两栏根本没法用
-watch(() => window.innerWidth, w => {
-  if (w < 768 && view.value === 'split') view.value = 'edit'
-})
 </script>
 
-<style scoped>
+<style scoped lang="scss">
 .dirty-tag {
-  animation: popIn .25s var(--ease-out);
+  animation: popIn .2s var(--ease-out);
 }
 .title-input :deep(.el-input__inner) {
-  font-size: 17px;
-  font-weight: 650;
-  letter-spacing: .2px;
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  letter-spacing: -.01em;
 }
+
+.editor-body {
+  padding: 14px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.meta-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.tags-input { max-width: 300px; }
+.status-sel { width: 116px; }
+.meta-row .spacer { flex: 1; }
+
+// 分屏容器撑满剩余高度
+.split-view { flex: 1; min-height: 0; }
 </style>

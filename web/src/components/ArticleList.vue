@@ -89,15 +89,14 @@ function fmt(ts) {
   min-width: 20px;
   height: 18px;
   padding: 0 6px;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
-  font-weight: 700;
+  font-size: var(--fs-xs);
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
-  color: #C9BCFF;
-  background: var(--brand-soft);
-  border: 1px solid rgba(124, 92, 255, .3);
+  color: var(--tx-3);
+  background: var(--surface-2);
 }
 </style>

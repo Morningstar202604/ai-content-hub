@@ -18,7 +18,7 @@
             @click="toggle(p.id)"
           >
             <div class="plat-top">
-              <span class="plat-badge" :style="{ background: PLAT_COLORS[p.id] || '#64748B' }">{{ badgeMark(p) }}</span>
+              <span class="plat-badge">{{ badgeMark(p) }}</span>
               <div class="nn">
                 <div class="n">{{ p.name }}</div>
                 <div class="s">{{ p.needs_browser ? '浏览器' : '免登 API' }}</div>
@@ -67,10 +67,7 @@
         <el-table v-if="pubs.length" :data="pubs" size="small" max-height="260">
           <el-table-column label="平台" width="76">
             <template #default="{ row }">
-              <span class="pub-plat">
-                <i class="mini-dot" :style="{ background: PLAT_COLORS[row.platform] || '#64748B' }" />
-                {{ row.platform }}
-              </span>
+              <span class="pub-plat">{{ row.platform }}</span>
             </template>
           </el-table-column>
           <el-table-column label="状态" width="82">
@@ -103,7 +100,6 @@
           <el-tag size="small" :type="a.status === 'logined' ? 'success' : 'info'" effect="dark">
             {{ a.status === 'logined' ? '在线' : '离线' }}
           </el-tag>
-          <span class="mini-dot" :style="{ background: PLAT_COLORS[a.platform] || '#64748B' }" />
           <span class="acct-name">{{ a.platform }} / {{ a.name }}</span>
         </div>
         <EmptyState v-if="!accounts.length" title="还没有登录任何平台" desc="点上方平台卡片的「登录」，扫码一次就长期在线" :px="96" />
@@ -113,7 +109,7 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, watch, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Promotion, RefreshLeft, RefreshRight } from '@element-plus/icons-vue'
 import { api } from '@/api'
@@ -122,18 +118,7 @@ import EmptyState from './EmptyState.vue'
 
 const hub = useHubStore()
 
-// 平台品牌色 + 徽标字（改版只动这里）
-const PLAT_COLORS = {
-  zhihu: '#0084FF',
-  bilibili: '#FB7299',
-  cnblogs: '#2FA8A0',
-  csdn: '#FC5531',
-  jianshu: '#EA6F5A',
-  juejin: '#1E80FF',
-  oschina: '#2CC067',
-  segmentfault: '#14B8A6',
-  toutiao: '#F04142'
-}
+// 平台徽标字（极简风：统一灰底，仅靠首字区分）
 const PLAT_MARKS = {
   zhihu: '知', bilibili: 'B', cnblogs: '博', csdn: 'C', jianshu: '简',
   juejin: '掘', oschina: '开', segmentfault: '思', toutiao: '头'
@@ -153,6 +138,7 @@ const selected = ref([])
 const draftOnly = ref(false)
 const updatable = ref([])
 const loginState = ref({})   // platform -> {status, message}
+const timers = {}            // platform -> setInterval id，卸载时统一清理
 
 // 登录成功后顺便提示一下（账号态列表由 hub.loadStatus 刷新）
 const loginHint = ref('')
@@ -161,6 +147,11 @@ const loginHint = ref('')
 watch(() => props.pubs, list => {
   updatable.value = list.filter(p => p.post_id).map(p => p.platform)
 }, { immediate: true, deep: true })
+
+// 抽屉关闭 / 组件卸载时，把还在跑的扫码轮询定时器全清掉，否则会泄漏
+onBeforeUnmount(() => {
+  Object.values(timers).forEach(id => clearInterval(id))
+})
 
 function toggle(id) {
   const i = selected.value.indexOf(id)
@@ -182,15 +173,18 @@ async function startLogin(platform) {
         loginState.value[platform] = s
         if (s.status === 'success') {
           clearInterval(timer)
+          delete timers[platform]
           loginHint.value = ''
           ElMessage.success(`${platform} 登录成功，登录态已保存，以后自动复用`)
           await hub.loadStatus()          // 刷新账号在线状态
         } else if (s.status === 'failed') {
           clearInterval(timer)
+          delete timers[platform]
           loginHint.value = `${platform} 登录失败：${s.message || '未知原因'}`
         }
       } catch { /* 轮询偶发失败忽略，下轮再试 */ }
     }, 2000)
+    timers[platform] = timer
   } catch { /* api.js 拦截器已弹错误提示 */ }
 }
 </script>
@@ -200,37 +194,29 @@ async function startLogin(platform) {
   font-style: normal;
   font-weight: 400;
   letter-spacing: 0;
+  text-transform: none;
   margin-left: auto;
-  color: var(--el-text-color-placeholder);
-  font-size: 10.5px;
+  color: var(--tx-4);
+  font-size: var(--fs-xs);
 }
 .hint-ico { margin-right: 5px; }
 .micro-hint {
-  font-size: 11px;
-  color: var(--el-text-color-placeholder);
-  margin-top: 7px;
+  font-size: var(--fs-xs);
+  color: var(--tx-3);
+  margin-top: 8px;
 }
 
 .pub-plat {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
   font-variant-numeric: tabular-nums;
-}
-.mini-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 2.5px;
-  flex-shrink: 0;
-  display: inline-block;
+  color: var(--tx-2);
 }
 .pub-link {
-  color: #9F8CFF;
+  color: var(--accent-hi);
   text-decoration: none;
   font-variant-numeric: tabular-nums;
   &:hover { text-decoration: underline; }
 }
-.dim { color: var(--el-text-color-placeholder); }
+.dim { color: var(--tx-3); }
 .pub-err {
   color: var(--bad);
   font-size: 10px;
@@ -239,6 +225,5 @@ async function startLogin(platform) {
   white-space: nowrap;
 }
 
-// 账号行
-.acct-name { flex: 1; font-variant-numeric: tabular-nums; }
+.acct-name { flex: 1; font-variant-numeric: tabular-nums; color: var(--tx-2); }
 </style>

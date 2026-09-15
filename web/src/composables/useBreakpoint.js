@@ -24,8 +24,10 @@ export function useBreakpoint() {
     width: w,
     bp,
     // 宽到能常驻时就别塞抽屉了，抽屉在桌面端反而碍事
+    // 列表在平板横屏(>=1024)就常驻；侧栏在 13 寸笔记本(>=1280)就常驻，
+    // 否则 1280~1439 会被迫用 FAB 抽屉发稿，体验割裂。
     listDocked: computed(() => w.value >= 1024),
-    sideDocked: computed(() => w.value >= 1440),
+    sideDocked: computed(() => w.value >= 1280),
     isMobile: computed(() => w.value < 768)
   }
 }

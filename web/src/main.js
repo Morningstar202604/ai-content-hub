@@ -1,10 +1,6 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
-import ElementPlus from 'element-plus'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
-import * as Icons from '@element-plus/icons-vue'
-
-import 'element-plus/dist/index.css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
 import './styles/main.scss'
 
@@ -12,11 +8,9 @@ import App from './App.vue'
 
 const app = createApp(App)
 
-// 全量注册图标，模板里 <el-icon><Plus/></el-icon> 直接能用
-for (const [key, comp] of Object.entries(Icons)) {
-  app.component(key, comp)
-}
-
+// 组件、样式、图标全部走 vite 按需解析（见 vite.config.js 的 unplugin），
+// 不再 app.use(ElementPlus) 全量注册，也不再循环注册 300+ 图标——
+// 模板里用到的组件由 unplugin-vue-components 自动按需引入并带样式。
+// 中文化交给 <el-config-provider>（见 App.vue），语言包只引 zh-cn 一份。
 app.use(createPinia())
-app.use(ElementPlus, { locale: zhCn, size: 'default' })
 app.mount('#app')

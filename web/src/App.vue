@@ -1,4 +1,5 @@
 <template>
+  <el-config-provider :locale="zhCn">
   <div class="app">
     <!-- 全局动作进度条：加载/保存/发布任一进行中就亮 -->
     <div class="top-progress" :class="{ show: hub.loadingList || hub.saving || hub.publishing }" />
@@ -40,7 +41,7 @@
       />
       <div v-else class="pane pane-center">
         <EmptyState
-          :px="168"
+          :px="52"
           title="开始写一稿"
           desc="选一篇文章继续编辑，或者新建一篇，写完勾选平台一键发全网"
         >
@@ -100,11 +101,13 @@
       @done="hub.open($event)"
     />
   </div>
+  </el-config-provider>
 </template>
 
 <script setup>
 import { ref, onMounted, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import { Promotion, Plus, MagicStick } from '@element-plus/icons-vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useHubStore } from '@/stores/hub'
@@ -178,24 +181,24 @@ async function onRefresh() {
 
 .fab {
   position: fixed;
-  right: 18px;
-  bottom: 24px;
+  right: 16px;
+  bottom: 20px;
   z-index: 2000;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 12px 22px;
-  border-radius: 26px;
-  background: linear-gradient(135deg, #6D5CFF, #C44BFF);
+  padding: 11px 20px;
+  border-radius: 24px;
+  background: var(--accent);
   color: #fff;
-  font-size: 14px;
-  font-weight: 650;
-  box-shadow: 0 8px 26px rgba(124, 92, 255, .5);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  box-shadow: var(--shadow-lg);
   cursor: pointer;
   user-select: none;
-  transition: all .2s cubic-bezier(.22, 1, .36, 1);
+  transition: background .18s var(--ease-out), transform .18s var(--ease-out);
 
-  &:hover { transform: translateY(-2px); box-shadow: 0 12px 30px rgba(124, 92, 255, .65); }
-  &:active { transform: scale(.96); }
+  &:hover { background: var(--accent-hi); }
+  &:active { transform: scale(.97); }
 }
 </style>

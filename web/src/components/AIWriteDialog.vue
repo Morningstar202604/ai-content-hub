@@ -39,7 +39,7 @@
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref, reactive, watch } from 'vue'
 import { api } from '@/api'
 import { ElMessage } from 'element-plus'
 
@@ -55,7 +55,6 @@ const loading = ref(false)
 const form = reactive({ topic: '', style: '', words: 2000, tags_hint: '', publish_to: [] })
 
 // v-model 双向：外面改 modelValue，里面改 visible
-import { watch } from 'vue'
 watch(() => props.modelValue, v => { visible.value = v })
 watch(visible, v => emit('update:modelValue', v))
 

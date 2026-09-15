@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '@/api'
 
 export const useHubStore = defineStore('hub', {
@@ -57,7 +57,14 @@ export const useHubStore = defineStore('hub', {
     },
 
     async open(id) {
-      if (this.dirty && !confirm('有未保存的改动，确定要切换吗？')) return
+      if (this.dirty) {
+        try {
+          await ElMessageBox.confirm(
+            '当前文章有未保存的改动，切换会丢失这些改动。确定切换吗？',
+            '未保存的改动', { type: 'warning', confirmButtonText: '确定切换', cancelButtonText: '留在这' }
+          )
+        } catch { return }   // 用户取消，留在当前文章
+      }
       this.currentId = id
       this.current = await api.getArticle(id)
       await this.loadPubs()
