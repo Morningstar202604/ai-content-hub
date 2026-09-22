@@ -58,10 +58,8 @@ SECRET_PAT = re.compile(r"sk-[A-Za-z0-9]{12,}")
 
 
 def desanitize(text: str) -> str:
-    # 占位替换：保留前 4 字符作指纹，其余打码
+    # 全量打码：sk- 后 12+ 位字符一律替换，保留前 4 字符作指纹
     text = SECRET_PAT.sub(lambda m: m.group(0)[:4] + "…（已脱敏）", text)
-    # 兜底：完整原始密钥硬删（防占位正则漏网）
-    text = text.replace("sk-***（已脱敏）", "sk-***（已脱敏）")
     return text
 
 
