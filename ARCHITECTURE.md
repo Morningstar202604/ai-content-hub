@@ -146,7 +146,7 @@ END
 | M2 人机协作闭环 | wait_human interrupt/resume 全链路联调 + 管理视图 Run 详情/恢复入口 + 发布向导切流引擎 + 登录态快照/check 修复 | 掘金草稿场景：run 挂起→前端可见→恢复→verify 通过→run done | ✅ 2026-09-22 完成：四场景冒烟 7 断言全过；真实掘金 E2E 挂起验证（run `2b5965ada02a`，draft_confirm，草稿 7687899083843256347，前端挂起卡片截图验收）；恢复→verify→done 腿由冒烟 C 证明，真实恢复=用户完成平台发布后点「已处理，恢复」（run 正挂起等该操作） |
 | M3 Agent 决策增强 | LLM 分诊实测调优 +（可选）平台推荐 agent + 按平台内容适配开关 | 分诊决策留痕可审计；各开关默认关 | ✅ 2026-09-22：LLM 分诊生产实测（greenlet 事件正确归因）、decisions 留痕+审计弹窗、MCP publish 切流引擎；可选项（平台推荐/内容适配）按 YAGNI 未实装=天然默认关 |
 | M4 收尾治理 | 根目录调试脚本归档 scripts/debug/ + legacy 路径标注 deprecated + 文档回写 | 根目录仅剩入口脚本；Changelog 完整 | ✅ 2026-09-22：根目录仅剩 cli.py（42 调试+6 工具归档）；发布主路径已切流并带 strangler 注释（update/sync/refresh 留作正式 legacy 路径，见 AUDIT 遗留表）；Changelog 0.3.0→0.3.3 完整 |
-| M5 切流收尾 | update/sync 接入工作流引擎（update 专图+UpdateState+runner kind 路由；sync 编排层一文一 run 扇出；refresh 永久 legacy 裁定） | S1–S6 冒烟全绿 + legacy/引擎双跑 DB 对账一致（R1/R3 门禁） | ✅ 2026-09-22 完成（smoke_update 六案全绿 + publish 回归九断言全绿 + 端点真验：update dry_run/sync 扇出/kind 过滤；规格见 docs/design/m5-architecture.md） |
+| M5 切流收尾 | update/sync 接入工作流引擎（update 专图+UpdateState+runner kind 路由；sync 编排层一文一 run 扇出；refresh 永久 legacy 裁定）+ 前端切流（编辑器「同步更新」/挂起卡片「内置浏览器打开」assist/「抓取文章入库」） | S1–S6 冒烟全绿 + legacy/引擎双跑 DB 对账一致（R1/R3 门禁） | ✅ 2026-09-22 完成（smoke_update 六案全绿 + publish 回归九断言全绿 + 端点真验 + 前端构建；规格见 docs/design/m5-architecture.md） |
 
 ## 6. 目录结构（增量）
 
@@ -178,6 +178,7 @@ ai-content-hub/
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-09-22 | 0.3.5 | **前端切流 + 平台接管**：编辑器新增「同步更新」按钮（update/workflow 切流，900s 轮询，仅启动失败回退 legacy 防双发）；挂起卡片「内置浏览器打开」（/accounts/{pf}/assist 带登录态有头接管——人工步骤不出站、不重登录，任务模式 900s）；平台与账号页「抓取文章入库」（refresh 进管理列表）；assist url 校验 422 / GET 405 已验。element-plus 懒加载维持缓办（触发条件=感知卡顿） |
 | 2026-09-22 | 0.3.4 | **M5 切流收尾（绞杀者第二刀）**：workflows 新增 UpdateState + build_update_nodes + build_update_graph（update 专图：无 verify 节点、门禁 ADR-009、间隔 delay_article）；runner kind 泛化（start(kind=)/resume 读 meta 行选图/双图字典；workflow_runs 加 kind 列+idx_runs_kind 幂等迁移，autocommit 防 S5 并行提交竞态）；api 新增 /articles/{aid}/update/workflow 与 /sync/pending/workflow（一文一 run，failed[] 按篇隔离）、/runs 加 kind/article_id 过滤；MCP update_article/sync_pending 切流（deadline 900s，仅启动失败回退防双发）；Hub 抽取 update_single（legacy update 循环体逐行搬移，双跑 DB 对账一致）。冒烟：smoke_update S1–S6 全绿 + publish 回归全绿 |
 | 2026-09-22 | 0.3.3 | **全量存量检测+优化**（详表见 `AUDIT.md`）：①playwright **进程级共享驱动单例** `_get_shared_pw` + **专属浏览器线程** `browser_thread_run`（greenlet/循环状态单线程化，根治 `inside the asyncio loop` 500 与 greenlet 跨线程发布失败，三轮三平台 9/9）；②登录快照四层永续保障（profile→auth.json 原子写→check/关窗自动保鲜→启动合回，csdn/zhihu/juejin 三份齐备且持续保鲜）；③check 落平台域+沉降重试+per-key 互斥；④hub.js 补 ElMessageBox 导入；⑤atexit 死代码移正；⑥MCP publish 切流引擎（回退仅限启动失败，防双发）；⑦DB 补 articles/jobs 共 3 索引；⑧根目录 48 残渣归档 scripts/（仅剩 cli.py）。M3/M4 收官 |
 | 2026-09-22 | 0.3.2 | **核心三修复 + 真实掘金 E2E 挂起验收**：①登录态快照（`BuiltinBrowser.export_auth/_import_auth`，登录成功即由 Python 同步写 `data/profiles/*.auth.json`，开浏览器自动合回——修"扫码成功、关窗丢态"）；②`service.check` 补 goto 平台域（about:blank 上 SameSite cookie 全被拦 → 永远假"未登录"的根因）+ check 加 per-key 互斥（B3 漏洞）+ `_check_auth_settled` 沉降重试；③`_with_adapter` 对 greenlet 跨线程冲突（Cannot switch to a different thread）drop+重建重试。真实 E2E：/publish/workflow 发掘金 → 草稿 7687899083843256347 → `draft_confirm` 挂起（run `2b5965ada02a`），前端挂起卡片/运行记录截图验收；LLM 分诊生产首秀（greenlet 错误被正确归因留痕） |
