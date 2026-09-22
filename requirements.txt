@@ -11,4 +11,4 @@ playwright>=1.48
 
 # 工作流引擎（LangGraph，ARCHITECTURE.md ADR-001）
 langgraph>=1.2
-langgraph-checkpoint-sqlite>=2.0
+langgraph-checkpoint-sqlite>=3.0
