@@ -291,3 +291,118 @@ def build_nodes(hub):
         'triage': triage,
         'aggregate': aggregate,
     }
+
+
+def build_update_nodes(hub):
+    """update 图节点工厂（M5/ADR-007，规格=docs/design/m5-architecture.md §3.2 矩阵）。
+
+    复用 build_nodes 的闭包：load_article / ensure_login / wait_human（同一函数对象，
+    wait_human 在 update 语境恒走 recover 场景——draft_confirm 分支不可达但**保留不动**，
+    属共享实现，禁止当死代码清理）；
+    决策核心 _decide/_llm_triage/_retry_limit 为模块级直接复用。
+    新增：compliance_gate_update（ADR-009）/ next_target / update_instance /
+    triage_update（间隔用 hub.delay_article，各图守各 legacy 行为）/ aggregate_update。"""
+
+    def compliance_gate_update(state):
+        """ADR-009：draft_only=True 豁免层4（AI 源须先草稿），保留层1安全扫描+层3双模型审查；
+        dry_run 跳过（与 publish 同）。GateError → fatal（run 失败、不开浏览器）。"""
+        if state.get('dry_run'):
+            return {'gate': {'passed': True, 'dry_run': True}}
+        try:
+            res = aigc_gate.apply_gate_before_publish(state['article'],
+                                                      draft_only=True)
+        except aigc_gate.GateError as ge:
+            return {'fatal': f'合规门禁拒绝更新: {ge}'}
+        return {'article': res['article'],
+                'gate': {'passed': True,
+                         'aigc_labeled': res['result'].get('aigc_labeled', False)}}
+
+    def next_target(state):
+        """镜像 next_platform：弹队列 + 从 target_pubs 查表取当前实例行。"""
+        q = list(state.get('platforms_queue') or [])
+        if not q:
+            return {'current_platform': ''}
+        pf = q[0]
+        pubs = state.get('target_pubs') or {}
+        return {'platforms_queue': q[1:], 'current_platform': pf,
+                'current_pub': dict(pubs.get(pf) or {}),
+                'attempts': 0, 'current_result': {}}
+
+    def update_instance(state):
+        """镜像 publish_platform：dry_run 合成结果；否则调 Hub.update_single
+        （经 _with_adapter → 浏览器线程/互斥/登录保鲜全继承），异常收进 current_result。"""
+        pf = state['current_platform']
+        attempts = int(state.get('attempts') or 0) + 1
+        pub = state.get('current_pub') or {}
+        if state.get('dry_run'):
+            time.sleep(0.2)   # 模拟真实节奏，验证状态机
+            return {'attempts': attempts, 'current_result': {
+                'platform': pf, 'ok': True, 'dry_run': True, 'status': 'ok',
+                'post_id': pub.get('post_id', ''),
+                'edit_url': pub.get('edit_url', '')}}
+        try:
+            r = hub.update_single(state['article_id'], pf, pub,
+                                  state['article'],
+                                  account=state.get('account', 'default'))
+            return {'attempts': attempts, 'current_result': {**r, 'ok': True}}
+        except Exception as e:   # aqg: top-level boundary（异常收进 current_result 供分诊）
+            return {'attempts': attempts, 'current_result': {
+                'platform': pf, 'ok': False, 'error': str(e)[:300]}}
+
+    def triage_update(state):
+        """决策核心复用 _decide；成功恒 finish（update 无 pending_human 语义）；
+        平台收尾间隔用 hub.delay_article（legacy update 同款，publish 用 delay_platform
+        是各守各 legacy 行为）；dry_run 不睡。"""
+        cur = dict(state.get('current_result') or {})
+        pf = cur.get('platform', state.get('current_platform', ''))
+        queue_left = list(state.get('platforms_queue') or [])
+        dry = bool(state.get('dry_run'))
+
+        def finish(result):
+            if not dry and queue_left:
+                time.sleep(random.uniform(*hub.delay_article))
+            return {'results': [result]}
+
+        if cur.get('ok'):
+            return finish({**cur, 'status': cur.get('status', 'ok'),
+                           'attempts': int(state.get('attempts') or 0)})
+
+        err = cur.get('error', '')
+        attempts = int(state.get('attempts') or 0)
+        limit = _retry_limit()
+        action, reason, by = _decide(state, pf, err, attempts, limit)
+        decision = {'platform': pf, 'error': err[:160], 'attempts': attempts,
+                    'action': action, 'reason': reason, 'by': by, 'ts': time.time()}
+        if action == 'retry':
+            time.sleep(0.2 if dry else min(8 * attempts, 24))
+            return {'decisions': [decision]}          # 回边 → update_instance
+        if action == 'human':
+            return {'decisions': [decision]}          # → wait_human（recover）
+        return {**finish({**cur, 'status': 'failed'}), 'decisions': [decision]}
+
+    def aggregate_update(state):
+        """summary 形状对齐 publish 但：无 pending_human 列、不翻转 articles.status
+        （update 不改变文章发布状态——legacy 同语义）。"""
+        results = list(state.get('results') or [])
+        fatal = state.get('fatal', '')
+        all_ok = bool(results) and all(r.get('ok') for r in results)
+        summary = {
+            'fatal': fatal, 'dry_run': bool(state.get('dry_run')),
+            'targets_total': len(results),
+            'targets_ok': sum(1 for r in results if r.get('ok')),
+            'ok': bool(not fatal and all_ok),
+            'failed': [{'platform': r.get('platform'),
+                        'error': (r.get('error') or '')[:160]}
+                       for r in results if not r.get('ok')],
+        }
+        return {'summary': summary}
+
+    nodes = dict(build_nodes(hub))   # load_article / ensure_login / wait_human 复用
+    nodes.update({
+        'compliance_gate_update': compliance_gate_update,
+        'next_target': next_target,
+        'update_instance': update_instance,
+        'triage_update': triage_update,
+        'aggregate_update': aggregate_update,
+    })
+    return nodes

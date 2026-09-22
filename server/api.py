@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from core.service import Hub
 from core import observability as obs
@@ -330,11 +330,14 @@ def publish_task_status(task_id: str):
     return {k: v for k, v in task.items() if not k.startswith("_")}
 
 
+# legacy 回退路径（strangler 第二刀/M5）：主路径为 POST /articles/{aid}/update/workflow；
+# 语义冻结见 docs/design/m5-api.md §7-C；防双发纪律：同一文章同一平台只走一条路径
 @app.post("/articles/{aid}/update")
 def update(aid: int, body: UpdateIn):
     return hub.update(aid, body.platforms, body.account)
 
 
+# legacy 回退路径（strangler 第二刀/M5）：主路径为 POST /sync/pending/workflow（一文一 run）
 @app.post("/sync/pending")
 def sync_pending():
     return hub.sync_pending()
@@ -589,6 +592,19 @@ class ResumeIn(BaseModel):
     note: str = ""
 
 
+class WorkflowUpdateIn(BaseModel):
+    """M5 原地更新工作流入参（m5-api.md §2；无 draft_only——update 无草稿概念）"""
+    platforms: Optional[List[str]] = None   # null/缺省/[] 三者等价 = 全部可更新实例（B1）
+    account: str = "default"
+    dry_run: bool = False
+
+
+class WorkflowSyncIn(BaseModel):
+    """M5 同步扇出入参（m5-api.md §3；body 可整体省略）"""
+    account: str = "default"
+    dry_run: bool = False
+
+
 @app.post("/articles/{aid}/publish/workflow")
 def publish_workflow(aid: int, body: WorkflowPublishIn):
     """Agent 驱动的工作流发布：立即返回 run_id，轮询 GET /runs/{run_id}。
@@ -602,9 +618,57 @@ def publish_workflow(aid: int, body: WorkflowPublishIn):
         raise HTTPException(404, str(e))
 
 
+@app.post("/articles/{aid}/update/workflow")
+def update_workflow(aid: int, body: WorkflowUpdateIn):
+    """原地更新工作流（kind=update，绞杀者第二刀）：立即返回 run_id，轮询 GET /runs/{run_id}。
+    与 legacy /update 并存（legacy 冻结保留，m5-api.md §7-C）。
+    错误映射（D-A，勿照抄 publish 的一律 404）：ValueError 按文案分流——
+    含"不存在"→404；含"没有已发布实例"→422；409 引擎禁用先于一切预检（B5）。"""
+    if not _workflow_enabled():
+        raise HTTPException(409, "工作流引擎已通过 config workflow.enabled=false 禁用")
+    try:
+        return _workflow_runner().start(aid, body.platforms, body.account,
+                                        kind='update', dry_run=body.dry_run)
+    except ValueError as e:
+        msg = str(e)
+        if "不存在" in msg:
+            raise HTTPException(404, msg)
+        raise HTTPException(422, msg)
+
+
+@app.post("/sync/pending/workflow")
+def sync_pending_workflow(body: WorkflowSyncIn = WorkflowSyncIn()):
+    """同步扇出（ADR-008，一文一 run）：发现 pending → 按文章分组 → 逐篇启动 update run。
+    单篇启动失败进 failed[] 不升级全局错误（D-D/B4）；count=0 非错误（B7）。"""
+    if not _workflow_enabled():
+        raise HTTPException(409, "工作流引擎已通过 config workflow.enabled=false 禁用")
+    from core import db as hub_db
+    rows = hub_db.get_pending_updates(hub.conn)
+    groups = {}
+    for r in rows:
+        groups.setdefault(r["article_id"], {"title": r["title"], "platforms": []})
+        groups[r["article_id"]]["platforms"].append(r["platform"])
+    runs, failed = [], []
+    for aid, info in groups.items():
+        try:
+            r = _workflow_runner().start(aid, sorted(set(info["platforms"])),
+                                         body.account, kind='update',
+                                         dry_run=body.dry_run)
+            runs.append({"article_id": aid, "title": info["title"],
+                         "run_id": r["run_id"]})
+        except ValueError as e:
+            failed.append({"article_id": aid, "title": info["title"],
+                           "reason": str(e)})
+    return {"count": len(runs), "runs": runs, "failed": failed}
+
+
 @app.get("/runs")
-def runs_list(limit: int = 50):
-    return _workflow_runner().list(limit)
+def runs_list(limit: int = 50,
+              kind: Optional[Literal["publish", "update"]] = None,
+              article_id: Optional[int] = None):
+    """运行列表（向后兼容增强）：可选 kind/article_id 过滤，缺省返回全部 kind；
+    响应项新增 kind 字段（存量行 'publish'，m5-api.md §4.1）。"""
+    return _workflow_runner().list(limit, kind=kind, article_id=article_id)
 
 
 @app.get("/runs/{run_id}")

@@ -578,6 +578,30 @@ class Hub:
             db.update_article(self.conn, article_id, status="published")
         return results
 
+    def update_single(self, article_id, platform, pub, article, account="default"):
+        """原地更新单个平台实例并完成落库（jobs/publications 记账）。
+
+        legacy update() 循环体与工作流节点 update_instance 共用的唯一更新原语
+        （对称于 publish_single，M5/ADR-007）。pub 携带 post_id/edit_url。
+        成功返回 {'platform', 'ok': True}；失败在完成失败记账后抛异常。
+        平台间 sleep 留在各自编排层（legacy 循环 / workflow triage）——
+        本方法为逐行搬移 legacy 循环体（R3 门禁：行为逐字不变）。"""
+        job = db.add_job(self.conn, "update", article_id, platform)
+        try:
+            def _do(ad, page):
+                return ad.update(page, dict(pub), article)
+            self._with_adapter(platform, account, _do)
+            db.upsert_publication(self.conn, article_id, platform, account,
+                                  status="ok", last_error="",
+                                  draft_only=0, updated_at=db.now())
+            db.finish_job(self.conn, job, True, "原地更新成功")
+            return {"platform": platform, "ok": True}
+        except Exception as e:   # aqg: top-level boundary（失败记账后重抛，publish_single 对称）
+            db.upsert_publication(self.conn, article_id, platform, account,
+                                  last_error=str(e)[:300])
+            db.finish_job(self.conn, job, False, str(e)[:300])
+            raise
+
     def update(self, article_id, platforms=None, account="default"):
         """原地更新：打开各平台的编辑页改内容，改完就是更新，不是新发一篇。"""
         art = self.get(article_id)
@@ -592,22 +616,14 @@ class Hub:
 
         results = []
         for p in pubs:
-            pf = p["platform"]
-            job = db.add_job(self.conn, "update", article_id, pf)
             try:
-                def _do(ad, page, p=p):
-                    return ad.update(page, dict(p), art)
-                self._with_adapter(pf, account, _do)
-                db.upsert_publication(self.conn, article_id, pf, account,
-                                      status="ok", last_error="",
-                                      draft_only=0, updated_at=db.now())
-                db.finish_job(self.conn, job, True, "原地更新成功")
-                results.append({"platform": pf, "ok": True})
+                r = self.update_single(article_id, p["platform"], p, art,
+                                       account=account)
             except Exception as e:
-                db.upsert_publication(self.conn, article_id, pf, account,
-                                      last_error=str(e)[:300])
-                db.finish_job(self.conn, job, False, str(e)[:300])
-                results.append({"platform": pf, "ok": False, "error": str(e)})
+                results.append({"platform": p["platform"],
+                                "ok": False, "error": str(e)})
+            else:
+                results.append(r)
             # 体检 B12 修复（QA 标质力 2026-09-21）：最后一个平台不再空等 30-90s
             if p is not pubs[-1]:
                 time.sleep(random.uniform(*self.delay_article))

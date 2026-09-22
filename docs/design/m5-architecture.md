@@ -1,6 +1,6 @@
 # M5 架构设计：update / sync_pending / refresh 接入 LangGraph 工作流引擎
 
-> 日期：2026-09-22 · 状态：设计评审中（只产出设计，不改任何业务代码）
+> 日期：2026-09-22 · 状态：**已定稿并实施**（S1–S6 冒烟全绿 + publish 回归全绿 + 端点真验通过；D-C 经主理人中转获批）
 > 作者：architect（高见远） · 交付对象：api-designer / database-engineer / backend-engineer
 > 真理源回写：本文定稿后由 backend-engineer 实施时同步回写 ARCHITECTURE.md（§3.5 新图、ADR-007~009、Changelog）
 
@@ -344,6 +344,8 @@ CREATE INDEX IF NOT EXISTS idx_runs_kind ON workflow_runs(kind, created_at DESC)
             { "article_id": 7, "title": "…", "run_id": "b2…" } ] }
 // 错误：409（同上，引擎禁用且未启动任何 run）
 ```
+
+> **评审确认 2026-09-22（architect，经主理人中转）**：sync 响应允许 additive `failed[]`（api-designer 决策 D-C）——区分「无 pending」与「全启动失败」，MCP 回退判定（run_ids 空才回退）依赖该字段；本节响应形状以含 `failed[]` 为准。
 
 ### 6.2 修改端点（向后兼容）
 

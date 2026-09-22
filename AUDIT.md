@@ -53,7 +53,8 @@
 | 项 | 说明 | 建议时机 |
 |---|---|---|
 | element-plus 单包 943KB | 首屏体积，可路由级懒加载 | 用户感知卡顿时 |
-| update/sync/refresh 仍走 legacy | 绞杀者增量：发布主路径已切引擎，原地更新类待下刀 | M5 |
+| ~~update/sync 仍走 legacy~~ | ✅ M5 已切流（update 专图 + sync 一文一 run 扇出；smoke_update S1–S6 全绿 + 双跑 DB 对账一致） | 完成 |
+| refresh 走 legacy | 经评估不接入（M5 裁定，永久 legacy；单步只读无引擎价值点，重评触发条件见 docs/design/m5-architecture.md §1.4） | 完成（裁定） |
 | 共享驱动进程级崩溃 | 需重启服务恢复（原结构也如此） | 发生再议 |
 | LLM 分诊可选项（平台推荐/按平台改写） | ARCHITECTURE M3 标注"可选、默认关"，未实装=天然关 | 有真实需求再开 |
 | 掘金后台 2-3 个测试草稿 | E2E/历史遗留 | 用户随手删 |
