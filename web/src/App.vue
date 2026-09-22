@@ -41,6 +41,7 @@
         @save="hub.save()"
         @touch="hub.dirty = true"
         @publish="wizard = true"
+        @sync-update="hub.updateRemote(hub.updatable)"
         @ai-rewrite="onRewrite"
         @ai-polish="onPolish"
       />

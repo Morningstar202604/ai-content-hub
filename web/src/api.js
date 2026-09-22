@@ -50,6 +50,16 @@ export const api = {
   update: (id, platforms, account = 'default') =>
     http.post(`/articles/${id}/update`, { platforms, account }),
   syncPending: () => http.post('/sync/pending'),
+  // M5 切流：原地更新/同步走工作流引擎
+  updateWorkflow: (id, platforms, account = 'default') =>
+    http.post(`/articles/${id}/update/workflow`, { platforms, account }),
+  syncPendingWorkflow: (account = 'default') =>
+    http.post('/sync/pending/workflow', { account }),
+  // 人工步骤接管：带登录态的内置有头浏览器打开平台页
+  assistOpen: (platform, url) =>
+    http.post(`/accounts/${platform}/assist`, { url }),
+  assistStatus: (platform, taskId) =>
+    http.get(`/accounts/${platform}/assist/status`, { params: { task_id: taskId } }),
   publications: (articleId) => http.get('/publications', { params: { article_id: articleId } }),
   // 需要人工处理的发布实例（掘金草稿等人点"确定并发布"）
   pendingHuman: () => http.get('/pending-human'),

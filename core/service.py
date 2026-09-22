@@ -246,6 +246,33 @@ class Hub:
             info["有头显示"] = ensure_display() or "不可用（装 xvfb：apt install -y xvfb）"
         return info
 
+    def assist_open(self, platform, url, timeout=900, account="default"):
+        """带登录态的有头浏览器打开平台页——把"去平台互动"接进本机。
+
+        用我们的 profile（已登录），用户在弹出窗口里完成平台侧最后一步
+        （如掘金「确定并发布」），关窗即结束。登录态四层保障全程继承。"""
+        with self._busy_for(platform, account):
+            self._drop(platform, account)
+
+            def _op():
+                br = BuiltinBrowser(platform, account, headless=False)
+                closed = threading.Event()
+                try:
+                    ctx = br.start()
+                    page = ctx.new_page()
+                    page.on('close', lambda _: closed.set())
+                    page.goto(url, timeout=60000, wait_until='domcontentloaded')
+                    closed.wait(timeout=timeout)
+                    msg = ('平台页已关闭——如已完成操作，回管理页点「已处理，恢复」'
+                           if closed.is_set() else f'assist 超时({timeout}s)自动关闭')
+                    return {'ok': True, 'msg': msg}
+                finally:
+                    try:
+                        br.close()
+                    except Exception:   # aqg: top-level boundary（关窗兜底，assist 任务收尾）
+                        pass
+            return browser_thread_run(_op)
+
     def bootstrap_cnblogs(self, username, password, account="default",
                           timeout=600, on_captcha="handoff"):
         """浏览器登录博客园，登录后自动抠出 MetaWeblog 三件套写进 config.json。
@@ -619,7 +646,7 @@ class Hub:
             try:
                 r = self.update_single(article_id, p["platform"], p, art,
                                        account=account)
-            except Exception as e:
+            except Exception as e:   # aqg: top-level boundary（单平台失败记错误行，循环继续）
                 results.append({"platform": p["platform"],
                                 "ok": False, "error": str(e)})
             else:

@@ -31,7 +31,9 @@
               </div>
               <div class="hc-ops">
                 <el-button v-if="r.human_task?.edit_url" size="small" type="warning"
-                           @click="goUrl(r.human_task.edit_url)">打开平台页面</el-button>
+                           @click="hub.assistOpen(r.human_task.platform, r.human_task.edit_url)">内置浏览器打开</el-button>
+                <el-button v-if="r.human_task?.edit_url" size="small" text
+                           @click="goUrl(r.human_task.edit_url)">浏览器直开</el-button>
                 <el-button size="small" type="primary"
                            :loading="resuming === r.id"
                            @click="doResume(r, true)">已处理，恢复</el-button>
@@ -146,6 +148,8 @@
                 :loading="hub.loginStates[p.id]?.status === 'running'"
                 @click="hub.startLogin(p.id)"
               >{{ hub.loginStates[p.id]?.status === 'running' ? '等待扫码…' : (acctState(p.id) ? '重新登录' : '去登录') }}</el-button>
+              <el-button size="small" text :loading="refreshingId === p.id"
+                         @click="doRefresh(p)">抓取文章入库</el-button>
             </div>
           </div>
         </el-tab-pane>
@@ -220,6 +224,7 @@ const hub = useHubStore()
 const tab = ref('human')
 const reloading = ref(false)
 const resuming = ref('')          // 正在恢复的 run id
+const refreshingId = ref('')      // 正在抓取入库的平台
 const runDialog = ref(false)
 const runDetail = ref(null)       // 当前详情 run
 
@@ -231,6 +236,11 @@ async function reloadAll() {
     await Promise.all([hub.loadPendingHuman(), hub.loadRuns(), hub.loadAllPubs(),
                        hub.loadStatus(), hub.loadPlatforms()])
   } finally { reloading.value = false }
+}
+
+async function doRefresh(p) {
+  refreshingId.value = p.id
+  try { await hub.refreshPlatform(p.id) } finally { refreshingId.value = '' }
 }
 
 function acctState(platform) {

@@ -28,6 +28,11 @@
         <span class="btxt">发布</span>
       </el-button>
 
+      <el-button v-if="hub.updatable.length" size="small" :icon="Refresh"
+                 :disabled="dirty" :loading="hub.publishing" @click="$emit('sync-update')">
+        <span class="btxt">同步更新</span>
+      </el-button>
+
       <el-button size="small" type="primary" :icon="Check" :loading="saving" @click="$emit('save')">
         <span class="btxt">保存</span>
       </el-button>
@@ -83,7 +88,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
-import { Check, PriceTag, Aim, Brush, Menu, Edit, Operation, View, Promotion } from '@element-plus/icons-vue'
+import { Check, PriceTag, Aim, Brush, Menu, Edit, Operation, View, Promotion, Refresh } from '@element-plus/icons-vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 
 const props = defineProps({
@@ -92,7 +97,9 @@ const props = defineProps({
   dirty: Boolean,
   saving: Boolean
 })
-const emit = defineEmits(['save', 'touch', 'ai-rewrite', 'ai-polish', 'publish'])
+import { useHubStore } from '@/stores/hub'
+const hub = useHubStore()
+const emit = defineEmits(['save', 'touch', 'ai-rewrite', 'ai-polish', 'publish', 'sync-update'])
 
 const { isMobile } = useBreakpoint()
 // 手机默认只看编辑，分屏两栏根本没法用；桌面默认分屏

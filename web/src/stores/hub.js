@@ -238,8 +238,8 @@ export const useHubStore = defineStore('hub', {
     },
 
     // 轮询工作流 run 到终态 → 映射成向导结果行。超时/异常直接抛（见 publish 注释）
-    async _pollWorkflowRows(runId, platforms) {
-      const deadline = Date.now() + 300000     // 5 分钟硬顶（平台间风控 sleep 8-20s/台）
+    async _pollWorkflowRows(runId, platforms, deadlineMs = 300000) {
+      const deadline = Date.now() + deadlineMs
       let run = null
       while (Date.now() < deadline) {
         run = await api.runDetail(runId)
@@ -269,12 +269,25 @@ export const useHubStore = defineStore('hub', {
       if (!this.currentId) return
       this.publishing = true
       try {
-        const r = await api.update(this.currentId, platforms)
-        const bad = (r || []).filter(x => !x.ok)
-        if (bad.length === 0) ElMessage.success('原地更新完成')
+        // M5 切流：仅启动失败回退 legacy，启动后绝不回退防双发
+        let rows, run_id = null
+        try {
+          const start = await api.updateWorkflow(this.currentId, platforms)
+          run_id = start.run_id
+          rows = await this._pollWorkflowRows(run_id, platforms, 900000)
+          this.loadRuns()
+        } catch (e) {
+          if (run_id) throw e
+          rows = await api.update(this.currentId, platforms)
+        }
+        const bad = (rows || []).filter(x => !x.ok)
+        if ((rows || []).some(x => x.warning)) {
+          ElNotification({ title: '更新需要人工收尾', type: 'warning', duration: 0,
+            message: '到「管理 → 需要人工」处理' })
+        } else if (bad.length === 0) ElMessage.success('同步更新完成')
         else ElMessage.warning(`${bad.length} 个平台更新失败`)
-        await Promise.all([this.loadPubs(), this.loadStatus()])
-        return r
+        await Promise.all([this.loadPubs(), this.loadAllPubs(), this.loadStatus()])
+        return rows
       } finally { this.publishing = false }
     },
 
@@ -289,6 +302,22 @@ export const useHubStore = defineStore('hub', {
       ElMessage.success(`抓回 ${r.count} 篇`)
       await this.loadList()
       return r
+    },
+
+    // 人工步骤接管：带登录态的内置有头浏览器打开平台页（不用去平台站点重登录）
+    async assistOpen(platform, url) {
+      if (!url) { ElMessage.warning('没有可打开的平台页地址'); return }
+      const t = await api.assistOpen(platform, url)
+      ElMessage.success('已在内置浏览器打开平台页（带登录态）——完成操作后关窗')
+      const timer = setInterval(async () => {
+        try {
+          const s = await api.assistStatus(platform, t.task_id)
+          if (s.status !== 'running') {
+            clearInterval(timer)
+            ElMessage.success('平台页已关闭。完成后回管理页点「已处理，恢复」')
+          }
+        } catch { /* 轮询失败静默 */ }
+      }, 3000)
     }
   }
 })

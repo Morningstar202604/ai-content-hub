@@ -474,6 +474,52 @@ def solve_captcha(platform: str, body: CaptchaIn):
     return hub.solve_captcha(platform, body.account, body.wait)
 
 
+class AssistIn(BaseModel):
+    url: str
+    timeout: int = 900
+
+
+ASSIST_TASKS = {}
+ASSIST_TASK_MAX = 20
+
+
+@app.post("/accounts/{platform}/assist")
+def assist_open(platform: str, body: AssistIn):
+    """带登录态的内置有头浏览器打开平台页（人工步骤接管，不必去平台站点重登录）。"""
+    import threading as _th, uuid as _uuid
+    if not body.url.startswith(("http://", "https://")):
+        raise HTTPException(422, "url 必须是 http(s) 地址")
+    task_id = _uuid.uuid4().hex[:10]
+    if len(ASSIST_TASKS) > ASSIST_TASK_MAX:
+        for k in list(ASSIST_TASKS)[: len(ASSIST_TASKS) - ASSIST_TASK_MAX]:
+            ASSIST_TASKS.pop(k, None)
+    ASSIST_TASKS[task_id] = {"task_id": task_id, "platform": platform,
+                             "url": body.url, "status": "running",
+                             "message": "内置浏览器已打开平台页（带登录态），等待人工操作…"}
+    def _run():
+        try:
+            r = hub.assist_open(platform, body.url, body.timeout)
+            ASSIST_TASKS[task_id].update(status="done", message=r.get("msg", ""),
+                                         finished_at=time.time())
+        except Exception as e:   # aqg: top-level boundary（assist 任务失败落终态）
+            ASSIST_TASKS[task_id].update(status="failed",
+                                         message=f"{type(e).__name__}: {str(e)[:200]}",
+                                         finished_at=time.time())
+    _th.Thread(target=_run, daemon=True).start()
+    return {"task_id": task_id, "status": "running",
+            "poll": f"/accounts/{platform}/assist/status?task_id={task_id}"}
+
+
+@app.get("/accounts/{platform}/assist/status")
+def assist_status(platform: str, task_id: str = None):
+    if task_id and task_id in ASSIST_TASKS:
+        return ASSIST_TASKS[task_id]
+    for t in reversed(list(ASSIST_TASKS.values())):
+        if t["platform"] == platform:
+            return t
+    return {"platform": platform, "status": "idle", "message": "没有 assist 任务"}
+
+
 @app.post("/refresh/{platform}")
 def refresh(platform: str, limit: int = 50):
     return hub.refresh(platform, limit=limit)
