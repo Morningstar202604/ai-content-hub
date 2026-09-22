@@ -9,10 +9,49 @@
 """
 
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "hub.db"
+
+
+class LockedConnection(sqlite3.Connection):
+    """体检 B4 修复（QA 标质力 2026-09-21）：单连接跨线程共享必须串行化。
+
+    check_same_thread=False 只是关掉检查；同一连接被 FastAPI 线程池端点、
+    登录后台线程、发布主流程并发使用时，execute/commit 会交错——
+    轻则 "cannot start a transaction within a transaction"，重则 commit
+    吞掉别人半截事务。WAL/busy_timeout 只解决**跨连接**锁，管不了同连接竞态。
+
+    方案（最小侵入）：自定义 factory，execute/commit/rollback 套 RLock 串行化。
+    局限（如实说明）：跨多条语句的事务原子性不保证（调用点是"一条语句+commit"
+    的模式，此局限不触发）；要严格事务请用 with conn: 包住多语句。
+    """
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._exec_lock = threading.RLock()
+
+    def execute(self, sql, parameters=()):
+        with self._exec_lock:
+            return super().execute(sql, parameters)
+
+    def executemany(self, sql, seq_of_parameters):
+        with self._exec_lock:
+            return super().executemany(sql, seq_of_parameters)
+
+    def executescript(self, sql_script):
+        with self._exec_lock:
+            return super().executescript(sql_script)
+
+    def commit(self):
+        with self._exec_lock:
+            return super().commit()
+
+    def rollback(self):
+        with self._exec_lock:
+            return super().rollback()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
@@ -71,6 +110,10 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 CREATE INDEX IF NOT EXISTS idx_pub_article ON publications(article_id);
 CREATE INDEX IF NOT EXISTS idx_pub_platform ON publications(platform);
+-- 2026-09-22 存量体检补齐：articles/jobs 原本零索引，列表过滤与门禁追溯全表扫
+CREATE INDEX IF NOT EXISTS idx_articles_status ON articles(status);
+CREATE INDEX IF NOT EXISTS idx_articles_updated ON articles(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_type_status ON jobs(type, status);
 """
 
 
@@ -79,7 +122,9 @@ def connect(db_path=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     # check_same_thread=False：FastAPI 把同步端点丢进线程池执行，
     # 连接却建在主线程，不开这个开关会报 "created in a thread can only be used in that same thread"
-    conn = sqlite3.connect(str(path), check_same_thread=False, timeout=30)
+    # factory=LockedConnection：同连接并发 execute/commit 串行化（体检 B4）
+    conn = sqlite3.connect(str(path), check_same_thread=False, timeout=30,
+                           factory=LockedConnection)
     conn.row_factory = sqlite3.Row
     # WAL：读写不互斥；busy_timeout：多线程同时写时等待而不是立刻报 database is locked
     conn.execute("PRAGMA journal_mode=WAL")

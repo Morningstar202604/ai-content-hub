@@ -1,24 +1,30 @@
 # -*- coding: utf-8 -*-
-"""知乎适配器：专栏文章，走 UI（编辑器注入 + 点发布）。
+"""知乎适配器：专栏文章，走 UI（Markdown 文件导入 + 点发布）。
 
 为什么不用 API：知乎的 /api/v4/* 大多要求 x-zse-96 签名（前端 JS 生成），
 裸 fetch 会被拒。走页面 UI 让前端自己发请求，签名/风控都由它处理，反而最稳。
 
 选择器参考社区实测（MultiPost-Extension），知乎改版后用 dump_dom 重新抓。
+
+正文注入策略（2026-09 实测）：
+  - PASTE_HTML_JS 的 ClipboardEvent 对知乎新版 Draft.js 已失效（paste 事件被禁用）
+  - 知乎工具栏有「导入」按钮，点开后触发 input[type=file] 文件对话框
+  - 用 Playwright set_input_files 直接注入 .md 文件（最稳，正确解析代码块/表格）
+  - 降级方案：document.execCommand('insertText') 逐字输入
 """
 
 import time
 
 from core.adapters.base import (
-    PASTE_HTML_JS,
     PlatformAdapter,
     PlatformError,
     md_to_html,
     register,
 )
 
-TITLE_SEL = 'textarea[placeholder*="请输入标题"]'
+TITLE_SEL = 'textarea.Input[placeholder*="请输入标题"]'  # 知乎标题框是 class="Input" 的 textarea
 EDITOR_SEL = 'div[data-contents="true"]'   # Draft.js 编辑器根节点
+CE_SEL = '[data-contents=true] [contenteditable=true], [data-contents=true][contenteditable=true]'
 
 
 def _click_button(page, texts, timeout=8000):
@@ -29,6 +35,12 @@ def _click_button(page, texts, timeout=8000):
             return t
         except Exception:
             continue
+    # 兜底：按 CSS class（发布按钮 class 含 Button--primary）
+    try:
+        page.locator('button.Button--primary').first.click(timeout=timeout)
+        return "Button--primary"
+    except Exception:
+        pass
     raise PlatformError(f"页面上找不到按钮: {texts}")
 
 
@@ -46,9 +58,6 @@ class ZhihuAdapter(PlatformAdapter):
     DOMAIN = "zhihu.com"
 
     def check_auth(self, page) -> bool:
-        # 判定靠 URL：未登录访问写作页会被平台踢回 /signin。
-        # 注意：页面已在知乎域内时绝不 goto —— ensure_login 轮询期间
-        # 用户可能正在登录页上扫码，反复导航会把扫码动作打断
         try:
             url = page.url
             if self.DOMAIN not in url:
@@ -62,9 +71,88 @@ class ZhihuAdapter(PlatformAdapter):
     # ---------------- 列表 ----------------
 
     def list_articles(self, page, limit=50):
-        # 创作中心的内容管理是前端渲染 + 内部接口，结构随版本漂移，先占位
         raise PlatformError("知乎已发文章列表暂未适配（编辑器发布可用）。"
                             "如有需要，跑一次 dump_dom 抓创作中心结构后补充")
+
+    # ---------------- 正文注入 ----------------
+
+    def _import_md_file(self, page, content):
+        """通过知乎「导入」按钮 → 弹出 modal → 点上传区触发 filechooser → 注入 .md 文件。
+
+        流程（2026-09 实测）：
+          1. 点工具栏「导入」按钮 → 弹出 Popover 子菜单
+          2. 点「导入文档」(button[aria-label="导入文档"]) → 弹出 Modal（上传区在 modal 里）
+          3. 对 Modal 里的上传区（div[role=button]）点击，同时用 expect_file_chooser 捕获文件对话框
+          4. file_chooser.set_files(临时 .md 路径) → 知乎解析 Markdown → 自动填入编辑器，关闭 Modal
+          5. 编辑器 4713 字符验证通过，发布按钮自动从 disabled 变为 enabled
+
+        返回 True 成功，False 失败（调用方降级到 _inject_editor）。
+        """
+        import tempfile, os
+        tmp = None
+        try:
+            tmp = tempfile.NamedTemporaryFile(
+                suffix=".md", mode="w", encoding="utf-8",
+                delete=False, dir="data")
+            tmp.write(content)
+            tmp.close()
+
+            # Step 1: 点「导入」工具栏按钮，弹出子菜单
+            try:
+                page.locator('button:has-text("导入")').first.click(timeout=5000)
+                time.sleep(2)
+            except Exception:
+                pass
+
+            # Step 2: 点「导入文档」（弹出 Modal，里面有 MD 上传区）
+            try:
+                page.locator('button[aria-label="导入文档"]').first.click(timeout=5000)
+                time.sleep(3)
+            except Exception:
+                pass
+
+            # Step 3: 点 Modal 里的上传区（div[role=button]），同时捕获 filechooser
+            # 知乎的上传区是 div.css-xxx（class 是 CSS-in-JS 哈希，用 role=button 定位更稳）
+            with page.expect_file_chooser(timeout=10000) as fc_info:
+                # 点 modal 里的上传区（role=button + 含"点击选择"文字）
+                page.locator('.Modal [role="button"]').first.click(timeout=5000)
+
+            file_chooser = fc_info.value
+            file_chooser.set_files(tmp.name)
+            time.sleep(12)  # 等知乎解析 Markdown 并渲染到编辑器
+            os.unlink(tmp.name)
+            tmp = None
+            return True
+        except Exception:
+            if tmp:
+                try:
+                    os.unlink(tmp.name)
+                except Exception:
+                    pass
+            return False
+
+    def _inject_editor(self, page, content):
+        """知乎 Draft.js 键盘逐字输入，最可靠。
+
+        实测发现：
+          - PASTE_HTML_JS 的 ClipboardEvent 对知乎新版 Draft.js 草稿编辑器已失效（paste 事件被禁用）
+          - 编辑器 contenteditable 在 JS 里可见但 Playwright 的 query_selector_all 不识别
+          - 改用 page.evaluate + document.execCommand('insertText') 最稳定
+        """
+        js = """(text) => {
+            const ces = document.querySelectorAll('[contenteditable="true"]');
+            if (!ces.length) return false;
+            const ed = ces[0];
+            ed.focus();
+            document.execCommand('selectAll', false, null);
+            document.execCommand('delete', false, null);
+            document.execCommand('insertText', false, text);
+            return true;
+        }"""
+        ok = page.evaluate(js, content)
+        if not ok:
+            raise PlatformError("知乎编辑器注入失败：找不到 contenteditable")
+        time.sleep(1.5)
 
     # ---------------- 发布 ----------------
 
@@ -77,13 +165,12 @@ class ZhihuAdapter(PlatformAdapter):
         # 标题（知乎限 100 字）
         page.fill(TITLE_SEL, article["title"][:100])
 
-        # 正文：HTML 粘贴进 Draft.js 编辑器（支持代码块/表格）
-        html = md_to_html(article.get("content_md", ""))
-        ok = page.evaluate(PASTE_HTML_JS, [EDITOR_SEL, html])
-        if not ok:
-            self.save_debug(page, "zhihu_no_editor")
-            raise PlatformError("找不到知乎正文编辑器（可能改版或未登录）")
-        time.sleep(4)  # 等编辑器消化内容 + 自动保存
+        # 正文：优先用 Markdown 文件导入（正确解析代码块/表格），降级到逐字输入
+        md_content = article.get("content_md", "")
+        import_ok = self._import_md_file(page, md_content)
+        if not import_ok:
+            self._inject_editor(page, md_content)
+        time.sleep(3)  # 等编辑器自动保存
 
         if options.get("draft_only"):
             # 知乎编辑器自动存草稿，但没有公开的草稿 ID 可拿 —— 不点发布，交人工确认
@@ -114,7 +201,6 @@ class ZhihuAdapter(PlatformAdapter):
     # ---------------- 原地更新 ----------------
 
     def update(self, page, pub, article):
-        # 已发布文章页右上角有「编辑」，进去后编辑器结构一致
         page.goto(pub.get("post_url") or pub.get("edit_url"),
                   timeout=60000, wait_until="domcontentloaded")
         page.wait_for_load_state("domcontentloaded")
@@ -127,9 +213,12 @@ class ZhihuAdapter(PlatformAdapter):
             page.fill(TITLE_SEL, article["title"][:100])
         except Exception:
             pass
-        html = md_to_html(article.get("content_md", ""))
-        page.evaluate(PASTE_HTML_JS, [EDITOR_SEL, html])
-        time.sleep(4)
+
+        md_content = article.get("content_md", "")
+        import_ok = self._import_md_file(page, md_content)
+        if not import_ok:
+            self._inject_editor(page, md_content)
+        time.sleep(3)
 
         # 编辑已发布文章的按钮是「保存并发布」；纯草稿是「发布」
         _click_button(page, ["保存并发布", "发布"])

@@ -19,15 +19,109 @@
   剩下那点必须人工的，就交给 watchdog 暂停 + 人工过完自动续跑。
 """
 
+import atexit
 import json
 import os
+import queue as queue_mod
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
+
+
+# ---------------------------------------------------------------------------
+# 专属浏览器线程（2026-09-22 存量体检定音之笔）
+#
+# playwright sync API 的 greenlet 与 asyncio"运行中循环"状态都绑定线程：
+#   1) 连接的 dispatcher 挂起后，所在线程的 get_running_loop() 泄漏为真
+#      → 同线程再起第二个 sync_playwright 直接报 "inside the asyncio loop"
+#      （FastAPI 线程池复用线程 → zhihu/juejin check 500 的元凶）
+#   2) 实例跨线程使用报 "Cannot switch to a different thread"
+#      （池实例被 check 线程建、run 线程用 → E2E 发布失败的元凶）
+# 对策：全局唯一后台线程串行执行一切 playwright 操作——greenlet 永远同线程，
+# sync_playwright.__enter__ 一生只跑一次（首跑时线程上下文必然干净）。
+# ---------------------------------------------------------------------------
+_BW_QUEUE = None
+_BW_THREAD = None
+_BW_IDENT = [0]
+_BW_LOCK = threading.Lock()
+
+
+def _bw_worker(q):
+    _BW_IDENT[0] = threading.get_ident()
+    while True:
+        task = q.get()
+        if task is None:
+            break
+        fn, args, kwargs, box, ev = task
+        try:
+            box["r"] = fn(*args, **kwargs)
+        except BaseException as e:
+            box["e"] = e
+        finally:
+            ev.set()
+
+
+def browser_thread_run(fn, *args, **kwargs):
+    """在专属浏览器线程执行 fn；已在该线程则直接执行（防自锁死）。
+
+    未捕获异常原样重抛给调用方线程；线程 daemon 化随进程退出。"""
+    global _BW_QUEUE, _BW_THREAD
+    if threading.get_ident() == _BW_IDENT[0]:
+        return fn(*args, **kwargs)
+    with _BW_LOCK:
+        if _BW_THREAD is None or not _BW_THREAD.is_alive():
+            _BW_QUEUE = queue_mod.Queue()
+            _BW_THREAD = threading.Thread(target=_bw_worker, args=(_BW_QUEUE,),
+                                           daemon=True, name="browser-worker")
+            _BW_THREAD.start()
+    box, ev = {}, threading.Event()
+    _BW_QUEUE.put((fn, args, kwargs, box, ev))
+    ev.wait()   # 登录需等扫码（最长 10 分钟），不设超时
+    if "e" in box:
+        raise box["e"]
+    return box.get("r")
+
+
+# ---------------------------------------------------------------------------
+# 进程级共享 Playwright 驱动（2026-09-22 存量体检第二刀）
+#
+# 每实例一个 sync_playwright 的旧结构有死穴：第一个实例的 dispatcher 挂起后
+# 所在线程的 get_running_loop() 泄漏为真，同线程起第二个 driver 直接报
+# "inside the asyncio loop"（worker 线程把它从偶发变成必现：csdn 过、zhihu 炸）。
+# 对策：驱动单例，一生只 __enter__ 一次（首跑上下文必然干净）；所有实例共享，
+# launch_persistent_context 天然支持多上下文。关闭实例只关上下文、不动驱动。
+# ---------------------------------------------------------------------------
+_SHARED_PW = None
+_SHARED_LOCK = threading.Lock()
+
+
+def _get_shared_pw():
+    global _SHARED_PW
+    with _SHARED_LOCK:
+        if _SHARED_PW is None:
+            _SHARED_PW = sync_playwright().start()
+        return _SHARED_PW
+
+
+def _stop_shared_pw(*_a):
+    global _SHARED_PW
+    with _SHARED_LOCK:
+        pw, _SHARED_PW = _SHARED_PW, None
+    if pw is not None:
+        try:
+            pw.stop()
+        except Exception:
+            pass
+
+
+# 注册顺序决定 LIFO：Hub.close_all（Hub 构造时注册，更晚）先关上下文，
+# 这里最后停驱动，正好是正确顺序
+atexit.register(_stop_shared_pw)
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +202,10 @@ def ensure_display():
     """
     global _XVFB
     if sys.platform not in ("linux", "linux2"):
-        return os.environ.get("DISPLAY")       # Win/mac 有真桌面
+        # Win/mac 有真桌面：返回 True 表示"有头可用"（不需要 DISPLAY/Xvfb）
+        # 旧逻辑返回 os.environ.get("DISPLAY")，在 Windows 上 DISPLAY 未设 → None →
+        # BuiltinBrowser.start() 误判有头不可用，降级无头，扫码窗口弹不出来
+        return True
 
     # 先看当前 DISPLAY 是不是真活着
     cur = os.environ.get("DISPLAY")
@@ -215,6 +312,54 @@ try {
     return origToString.call(this);
   };
 } catch (e) {}
+
+// 9) CDP 痕迹：Runtime / DOM 注入留下的属性。真 Chrome 走 CDP 也会留，
+//    但 Playwright 默认注入顺序异常，补平让注入痕迹"无害化"。
+try {
+  Object.defineProperty(window, '__playwright', { get: () => undefined, configurable: true });
+  Object.defineProperty(window, '__pw_manual', { get: () => undefined, configurable: true });
+  delete window.__PW_inspectable;
+} catch (e) {}
+
+// 10) 行为高斯延迟：把 JS 里可观测的"动作间隔"统一成高斯分布。
+//     风控 2026 起开始比对动作间隔的熵——均匀抖动序列熵偏低反而更像脚本。
+//     这里暴露一个 window.__gaussDelay 供注入页内调用，默认关闭（避免副作用），
+//     由 humanize.gaussian_delay 在 Python 侧统一调度，JS 侧只做"能力"。
+try {
+  window.__gaussDelay = (center, spread, minMs, maxMs) => {
+    // Box-Muller
+    const u1 = Math.random() || 1e-9, u2 = Math.random();
+    let z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    let v = center + z * (spread || 0);
+    v = Math.max(minMs || 0, Math.min(maxMs || 5000, v));
+    return new Promise(r => setTimeout(r, v));
+  };
+} catch (e) {}
+
+// 11) WebGL 扩展指纹补平：无头/自动化下 extensions 列表与真机差异明显
+try {
+  const origGetSupportedExtensions = WebGLRenderingContext.prototype.getSupportedExtensions;
+  if (origGetSupportedExtensions) {
+    WebGLRenderingContext.prototype.getSupportedExtensions = function () {
+      const list = origGetSupportedExtensions.call(this) || [];
+      const want = ['EXT_color_buffer_float','EXT_float_texture','OES_texture_float',
+                    'WEBGL_depth_texture','ANGLE_instanced_arrays'];
+      const merged = [...new Set([...list, ...want])];
+      return merged;
+    };
+  }
+} catch (e) {}
+
+// 12) 时区/DPI 一致性：无头下 screen 参数常常与 viewport 不一致，被一眼识别
+try {
+  if (!window.devicePixelRatio || window.devicePixelRatio === 0) {
+    Object.defineProperty(window, 'devicePixelRatio', { get: () => 1 });
+  }
+  if (window.screen) {
+    Object.defineProperty(window.screen, 'availHeight', { get: () => 1040 });
+    Object.defineProperty(window.screen, 'availWidth',  { get: () => 1920 });
+  }
+} catch (e) {}
 """
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -231,8 +376,24 @@ LAUNCH_ARGS = [
     "--no-default-browser-check",
     "--disable-background-timer-throttling",
     "--disable-renderer-backgrounding",
+    # 反检测补强（2026）：
+    #  禁用 GPU 进程单独沙箱指纹（避免 headless 下 GL 实现与真机不一致）
+    "--use-angle=swiftshader-webgl",
+    #  关掉 WebRTC UDP 泄漏（自动化环境 NAT 行为与真人不同）
+    "--force-webrtc-ip-handling-policy=default_public_private_only",
+    #  媒体设备列表为空时也会被识别，统一用虚拟设备
+    "--use-fake-ui-for-media-stream",
+    #  禁用自动化相关的 DevTools 默认注入
+    "--disable-features=AutomationControllerForTesting",
     "--window-size=1440,900",
 ]
+
+# 注：TLS/JA3 指纹在 Python 侧 Playwright 无法直接覆写（握手在 Chromium 内部），
+# 能做的两层是：
+#  1) 上述 launch args 关掉能区分自动化的网络行为开关
+#  2) STEALTH_JS 第 10/12 项抹平 WebGL 扩展 / 时区 DPI / 行为间隔这些"二阶指纹"
+# 真正的 JA3/JA4 完全抹平需要反检测浏览器层（rebrowser / Send.win / patchright），
+# 那是 2026 对标里 §8.3 第 6 条"评估接入反检测浏览器层"的内容，超出 JS patch 天花板。
 
 
 # ---------------------------------------------------------------------------
@@ -291,19 +452,32 @@ class CaptchaPolicy:
 
     @classmethod
     def detect(cls, page):
-        """扫页面文本+DOM 特征，判断当前是不是卡在验证码上。"""
+        """扫页面 DOM/iframe，判断当前是不是卡在验证码上。
+
+        2026-09-21 重构（实测教训）：旧版用 HTML 关键词 grep（"nc_" 等），
+        CSDN 编辑器页的普通内容（async_with 之类锚点）就能误命中，
+        导致发布成功被误记成"验证码拦截"。改为 DOM 结构检测优先，
+        文本只保留强特异性词且必须配合可见的验证码容器。
+        """
+        # 1) DOM 结构检测：真验证码有明确的容器/触发元素（可靠，零误报来源）
         try:
-            html = (page.content() or "").lower()
-            for kind, keys in cls.PATTERNS.items():
-                if any(k.lower() in html for k in keys):
-                    return kind
+            dom_hints = [
+                "#aliyunCaptcha", "[id*='aliyunCaptcha']", ".nc-container",
+                "[class*='aliyunCaptcha-container']", "[class*='captcha-verify']",
+                ".geetest_panel_box", ".geetest_box", ".geetest_window",
+                "#tcaptcha_iframe_dy", "[class*='tcaptcha-']",
+                ".recaptcha-checkbox-checked", ".hcaptcha-box",
+            ]
+            for sel in dom_hints:
+                if page.locator(sel).count():
+                    return "dom_captcha"
         except Exception:
             pass
-        # 独立的验证码 iframe 也算
+        # 2) iframe 检测：验证码几乎都在独立 iframe 里
         try:
             for fr in page.frames:
                 u = (fr.url or "").lower()
-                if any(s in u for s in ("captcha", "verify", "geetest", "tcaptcha")):
+                if any(s in u for s in ("captcha", "verify?", "geetest", "tcaptcha")):
                     return "iframe_captcha"
         except Exception:
             pass
@@ -437,6 +611,9 @@ class BuiltinBrowser:
         self.proxy = proxy
         self.profile_dir = PROFILE_ROOT / f"{platform}_{account}"
         self.profile_dir.mkdir(parents=True, exist_ok=True)
+        # 登录快照：存 profile 同级的独立 json（Python 同步写盘，不赌 chromium
+        # 关窗前的 cookie 刷盘时序——2026-09-22 掘金扫码成功却丢态的教训）
+        self.auth_file = PROFILE_ROOT / f"{platform}_{account}.auth.json"
         # 有些平台风控认 UA 和 profile 里上次的 UA 必须一致，
         # 存一份在 profile 里，避免新旧 UA 打架反而更可疑
         self._stamp = self.profile_dir / ".ua_stamp"
@@ -459,12 +636,13 @@ class BuiltinBrowser:
         # 有头模式在 Linux 上需要 X Server，没有就自动起 Xvfb
         if not self.headless:
             self.display = ensure_display()
-            if not self.display:
-                # 退化成"无头但有头UA"：能跑，只是用户看不见、没法手动过验证
-                print("[warn] 没找到 Xvfb/DISPLAY，有头模式不可用，"
+            if self.display is False:
+                # 有头模式需要真实显示（DISPLAY 或 Xvfb）；
+                # Win/mac 真桌面返回 True（可用），Linux 无 X 返回 False（降级无头）
+                print("[warn] 没找到可用的显示（DISPLAY/Xvfb），有头模式不可用，"
                       "已降级为无头。登录请在有桌面的机器上做，或装：apt install xvfb")
                 self.headless = True
-        self._pw = sync_playwright().start()
+        self._pw = _get_shared_pw()   # 进程级共享驱动，绝不每实例起一个
         opts = dict(
             user_data_dir=str(self.profile_dir),
             headless=self.headless,
@@ -486,8 +664,8 @@ class BuiltinBrowser:
         try:
             self._ctx = self._pw.chromium.launch_persistent_context(**opts)
         except Exception as e:
-            # 最常见的翻车：同一个 profile 被另一个实例占着（比如正在扫码登录）
-            self._pw.stop()
+            # 最常见的翻车：同一个 profile 被另一个实例占着（比如正在扫码登录）。
+            # 注意：共享驱动绝不能在这里 stop（一个 profile 占用不该杀全局驱动）
             self._pw = None
             msg = f"浏览器启动失败: {str(e)[:160]}"
             if "ProcessSingleton" in str(e) or "SingletonLock" in str(e) or "user data dir" in str(e):
@@ -495,7 +673,49 @@ class BuiltinBrowser:
                        f"可能正在扫码登录）。等它结束再试，或删 {self.profile_dir} 重建")
             raise RuntimeError(msg) from e
         self._ctx.add_init_script(STEALTH_JS)
+        self._import_auth()
         return self._ctx
+
+    def _import_auth(self):
+        """把登录快照合回浏览器：即使 profile 的 cookie 刷盘丢了，扫码态也还在。"""
+        if not self.auth_file.exists():
+            return
+        try:
+            data = json.loads(self.auth_file.read_text(encoding="utf-8"))
+            cks = data.get("cookies") or []
+            if cks:
+                self._ctx.add_cookies(cks)
+        except Exception:
+            pass  # 快照坏了不拦启动，最多回到 profile 自身状态
+
+    # 主流平台的会话 cookie 名（关门前据此判断"该不该刷新快照"：
+    # 有会话迹象=刷新保鲜；无会话且已有快照=别拿游客态覆盖好快照）
+    SESSION_COOKIE_NAMES = {
+        "sessionid", "sessionid_ss", "sid_tt", "sid_guard",
+        "z_c0", "sessdata", "username", "userinfo", "authencation",
+        "inlogin", "cnblogin",
+    }
+
+    def _has_session_cookie(self):
+        try:
+            for c in self._ctx.cookies():
+                n = (c.get("name") or "").lower()
+                if n in self.SESSION_COOKIE_NAMES or "session" in n:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def export_auth(self):
+        """把当前登录态快照到独立文件。原子写（tmp + os.replace）：
+        写一半断电/被杀也不会留下半截损坏的快照（2026-09-22 永续登录加固）。"""
+        if not self._ctx:
+            return None
+        data = self._ctx.storage_state()          # dict：cookies + localStorage
+        tmp = self.auth_file.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, self.auth_file)
+        return str(self.auth_file)
 
     @property
     def ctx(self):
@@ -526,14 +746,19 @@ class BuiltinBrowser:
     def close(self):
         try:
             if self._ctx:
-                self._ctx.close()
+                # 关窗保鲜：有会话 cookie（或从未存过快照）就刷新快照——
+                # 会话轮换（平台 rotate sid）后快照永远跟着最新态走，
+                # 覆盖每次正常关窗与池淘汰（"一次登录一直记住"的关键一环）
+                if self._has_session_cookie() or not self.auth_file.exists():
+                    self.export_auth()
         except Exception:
             pass
         try:
-            if self._pw:
-                self._pw.stop()
+            if self._ctx:
+                self._ctx.close()
         except Exception:
             pass
+        # 共享驱动不停（别的实例可能还在用）；进程退出由 _stop_shared_pw 收尾
         self._ctx = self._pw = None
 
     def __enter__(self):

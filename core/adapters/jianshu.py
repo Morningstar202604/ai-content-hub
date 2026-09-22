@@ -5,6 +5,7 @@
 接口序列参考 MultiPost-Extension 实测实现。
 """
 
+import json
 import time
 
 from core.adapters.base import (
@@ -15,6 +16,20 @@ from core.adapters.base import (
 )
 
 API = "https://www.jianshu.com"
+
+
+def _is_risk_blocked(page) -> bool:
+    """简书对脚本化请求直接返 JSON 风控页（如 {"error":[{"code":9,"message":"异常请求"}]}），
+    此时页面上**没有登录表单、没有扫码框**，轮询 author/notebooks 也永远拿不到有效数据。
+    识别到这种拒识就立即报出来，别傻等到超时。
+    """
+    try:
+        body = (page.content() or "")[:500]
+        if "异常请求" in body or ("error" in body and "code" in body and "sign_in" in page.url):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 @register
@@ -30,9 +45,20 @@ class JianshuAdapter(PlatformAdapter):
 
     def check_auth(self, page) -> bool:
         # 作者接口未登录会 302 到登录页 HTML，登录后返回 JSON 数组
+        # 先识别风控拒识：登录页被墙成"异常请求"JSON，扫码框根本不渲染
+        if _is_risk_blocked(page):
+            raise PlatformError(
+                "简书 /sign_in 返回风控页「异常请求」，扫码框未渲染。"
+                "这是简书对自动化浏览器的拒识。处理：\n"
+                "  1) 在弹出的浏览器窗口里手动刷新页面（F5）看能否出现扫码框；\n"
+                "  2) 或换个 IP/时段再试；\n"
+                "  3) 若仍不行，简书当前时段对自动化登录态限制较严，"
+                "建议改走其他平台（掘金/CSDN/知乎 已验证可用）")
         try:
             data = self.api_get(page, f"{API}/author/notebooks")
             return isinstance(data, list)
+        except PlatformError:
+            raise
         except Exception:
             return False
 

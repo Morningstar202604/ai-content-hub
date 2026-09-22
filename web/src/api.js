@@ -39,10 +39,20 @@ export const api = {
 
   publish: (id, platforms, draftOnly = false, account = 'default') =>
     http.post(`/articles/${id}/publish`, { platforms, draft_only: draftOnly, account }),
+  // 工作流引擎发布（LangGraph，ADR-001）：立即返回 run_id，轮询 runs() 看进度
+  publishWorkflow: (id, platforms, draftOnly = false, account = 'default') =>
+    http.post(`/articles/${id}/publish/workflow`,
+              { platforms, draft_only: draftOnly, account }),
+  runs: (limit = 50) => http.get('/runs', { params: { limit } }),
+  runDetail: (runId) => http.get(`/runs/${runId}`),
+  resumeRun: (runId, approved = true, note = '') =>
+    http.post(`/runs/${runId}/resume`, { approved, note }),
   update: (id, platforms, account = 'default') =>
     http.post(`/articles/${id}/update`, { platforms, account }),
   syncPending: () => http.post('/sync/pending'),
   publications: (articleId) => http.get('/publications', { params: { article_id: articleId } }),
+  // 需要人工处理的发布实例（掘金草稿等人点"确定并发布"）
+  pendingHuman: () => http.get('/pending-human'),
 
   aiWrite: (data) => http.post('/ai/write', data),
   aiRewrite: (id, instruction, publishTo) =>

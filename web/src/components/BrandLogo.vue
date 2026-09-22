@@ -1,14 +1,15 @@
 <template>
   <span class="brand" :class="{ big: size === 'big' }">
     <svg class="brand-mark" :style="{ width: px + 'px', height: px + 'px' }" viewBox="0 0 48 48" aria-hidden="true">
-      <!-- 极简 mark：圆角方块 + 白色纸飞机，无渐变 -->
-      <rect x="2" y="2" width="44" height="44" rx="11" fill="var(--tx-1)" />
-      <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"
-            transform="translate(12.6 13) rotate(8 12 12)" fill="var(--bg)" />
-      <!-- 尾迹三点：暗示多平台分发 -->
-      <circle cx="11" cy="38" r="1.5" :fill="`var(--bg)`" opacity=".75" />
-      <circle cx="16.5" cy="40" r="1.1" fill="var(--bg)" opacity=".45" />
-      <circle cx="21.5" cy="41.2" r=".9" fill="var(--bg)" opacity=".25" />
+      <!-- 一稿 mark：圆角方底 + 金色"一"字笔触 + 散落墨点（多平台分发） -->
+      <rect x="3" y="3" width="42" height="42" rx="12" fill="var(--surface)" stroke="var(--line-strong)" stroke-width="1" />
+      <!-- "一"：横笔，古铜金，微倾斜，像落笔 -->
+      <rect x="13" y="21" width="22" height="4.5" rx="2.25"
+            fill="var(--accent)" transform="rotate(-3 24 23)" />
+      <!-- 墨点：尾迹，暗示内容散到全网 -->
+      <circle cx="36" cy="24" r="1.6" fill="var(--accent-hi)" opacity=".85" />
+      <circle cx="39.5" cy="26.5" r="1.1" fill="var(--accent)" opacity=".5" />
+      <circle cx="42" cy="28.5" r=".8" fill="var(--accent)" opacity=".3" />
     </svg>
     <span v-if="withName" class="brand-txt">
       <span class="brand-name">{{ name }}</span>
@@ -31,22 +32,24 @@ defineProps({
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   user-select: none;
 }
 .brand-txt { display: flex; flex-direction: column; }
 .brand-name {
-  font-size: 14px;
-  font-weight: 650;
-  letter-spacing: .02em;
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: .04em;
   line-height: 1;
   color: var(--tx-1);
 }
 .brand-sub {
+  font-family: var(--font-disp);
   font-size: 10px;
-  color: var(--tx-3);
-  letter-spacing: .06em;
-  margin-top: 3px;
+  color: var(--accent);
+  letter-spacing: .1em;
+  margin-top: 4px;
   line-height: 1;
   white-space: nowrap;
 }

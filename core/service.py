@@ -7,12 +7,16 @@ AI 或者 REST API 调的都是这里的方法，不用碰浏览器细节。
 import atexit
 import json
 import random
+import threading
 import time
 from pathlib import Path
 
 from core import db
 from core.adapters.base import PlatformError, get_adapter
-from core.browser import BuiltinBrowser, ensure_login, CaptchaPolicy, wait_human_captcha
+from core.browser import (BuiltinBrowser, ensure_login, CaptchaPolicy,
+                          wait_human_captcha, browser_thread_run)
+from core.observability import TraceContext, METRICS, emit
+from core import gate as aigc_gate
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -20,9 +24,6 @@ ROOT = Path(__file__).resolve().parent.parent
 from core.adapters import (  # noqa: F401
     bilibili, cnblogs, csdn, jianshu, juejin, oschina, segmentfault, toutiao, zhihu,
 )
-
-import random
-import time
 
 
 class Hub:
@@ -41,53 +42,75 @@ class Hub:
         # 无头浏览器实例池：key=(platform, account)，登录流程不走池（它要独立的有头实例）
         self._pool = {}
         self._pool_order = []
+        # FastAPI 同步端点跑在线程池，多线程同时 _acquire 会竞态——加锁护住 LRU
+        self._pool_lock = threading.Lock()
+        # 体检 B3 修复（QA 标质力 2026-09-21）：per-key 互斥。同一 (platform,account)
+        # 的浏览器实例是单线程玩物（Playwright sync 基于 greenlet），两个并发请求
+        # 拿同一个实例 = greenlet 崩溃。_pool_lock 只护字典读写，这里补"实例占用"互斥。
+        self._busy = {}
+        # 进程退出兜底关浏览器（原来这行写在 _busy_for 的 return 后面，
+        # 是永远执行不到的死代码——退出时浏览器从不自动关）
         atexit.register(self.close_all)
+
+    def _busy_for(self, platform, account):
+        """取（或建）per-key 互斥锁。调用方用 with 包住整个浏览器操作过程。"""
+        key = (platform, account)
+        with self._pool_lock:
+            if key not in self._busy:
+                self._busy[key] = threading.Lock()
+            return self._busy[key]
 
     # ------------- 浏览器实例池 -------------
 
     def _acquire(self, platform, account):
         """拿（或起）一个 headless 实例。拿到的不关，池里常驻复用。"""
         key = (platform, account)
-        br = self._pool.get(key)
-        if br is not None:
-            if key in self._pool_order:
-                self._pool_order.remove(key)
-            self._pool_order.append(key)          # touch LRU
+        with self._pool_lock:
+            br = self._pool.get(key)
+            if br is not None:
+                if key in self._pool_order:
+                    self._pool_order.remove(key)
+                self._pool_order.append(key)          # touch LRU
+                return br
+            br = BuiltinBrowser(platform, account, headless=self.headless)
+            self._pool[key] = br
+            self._pool_order.append(key)
+            while len(self._pool_order) > self.POOL_MAX:
+                old = self._pool_order.pop(0)
+                victim = self._pool.pop(old, None)
+                if victim:
+                    try:
+                        victim.close()
+                    except Exception:
+                        pass
             return br
-        br = BuiltinBrowser(platform, account, headless=self.headless)
-        self._pool[key] = br
-        self._pool_order.append(key)
-        while len(self._pool_order) > self.POOL_MAX:
-            old = self._pool_order.pop(0)
-            victim = self._pool.pop(old, None)
-            if victim:
-                try:
-                    victim.close()
-                except Exception:
-                    pass
-        return br
 
     def _drop(self, platform, account):
-        """实例疑似崩了：踢出池关掉，下次 _acquire 会起全新的。"""
+        """实例疑似崩了：踢出池关掉，下次 _acquire 会起全新的。
+        关闭经 browser_thread_run 路由——实例的 greenlet 属于浏览器线程，
+        跨线程 close 会抛（会被吞掉但状态关不干净）。"""
         key = (platform, account)
-        victim = self._pool.pop(key, None)
-        if key in self._pool_order:
-            self._pool_order.remove(key)
+        with self._pool_lock:
+            victim = self._pool.pop(key, None)
+            if key in self._pool_order:
+                self._pool_order.remove(key)
         if victim:
             try:
-                victim.close()
+                browser_thread_run(victim.close)   # 已在浏览器线程则内联执行
             except Exception:
                 pass
 
     def close_all(self):
         """进程退出前把池里所有浏览器关干净（atexit 兜底，CLI/serve 都生效）。"""
-        for br in list(self._pool.values()):
+        with self._pool_lock:
+            victims = list(self._pool.values())
+            self._pool.clear()
+            self._pool_order.clear()
+        for br in victims:
             try:
-                br.close()
+                browser_thread_run(br.close)
             except Exception:
                 pass
-        self._pool.clear()
-        self._pool_order.clear()
 
     # ---------------- 账号 ----------------
 
@@ -105,17 +128,47 @@ class Hub:
                 db.upsert_account(self.conn, platform, account, "-", "offline")
                 return False, str(e)
 
-        # profile 目录是独占的：先释放池里可能占着它的实例，不然有头浏览器起不来
-        self._drop(platform, account)
-        br = BuiltinBrowser(platform, account, headless=False)  # 登录必须有头
-        try:
-            ok, msg = ensure_login(br, ad.login_url, ad.check_auth, timeout=timeout,
-                                   on_captcha=on_captcha or self.on_captcha)
-            db.upsert_account(self.conn, platform, account,
-                              str(br.profile_dir), "logined" if ok else "offline")
-            return ok, msg
-        finally:
-            br.close()
+        # profile 目录是独占的：先释放池里可能占着它的实例，不然有头浏览器起不来。
+        # B3：整个登录过程持 per-key 互斥，防止与池实例/另一路登录争同一 profile
+        with self._busy_for(platform, account):
+            self._drop(platform, account)
+
+            def _op():
+                br = BuiltinBrowser(platform, account, headless=False)  # 登录必须有头
+                try:
+                    ok, msg = ensure_login(br, ad.login_url, ad.check_auth, timeout=timeout,
+                                           on_captcha=on_captcha or self.on_captcha)
+                    if ok:
+                        # 登录态快照：Python 同步写盘（2026-09-22 掘金扫码成功但
+                        # chromium 关窗前没刷 cookie、状态丢失的修复）
+                        try:
+                            br.export_auth()
+                        except Exception:
+                            pass
+                    db.upsert_account(self.conn, platform, account,
+                                      str(br.profile_dir), "logined" if ok else "offline")
+                    return ok, msg
+                finally:
+                    br.close()
+            return browser_thread_run(_op)
+
+    def _check_auth_settled(self, ad, page, settle=2.0, tries=2):
+        """登录态检查（带沉降重试）。
+
+        竞态：goto 等到 domcontentloaded 后 SPA 可能仍在跳转/替换文档，
+        立即 evaluate 打在销毁的 context 上会抛异常，被 check_auth 吞掉
+        变成假"未登录"（2026-09-22 掘金无头复查连假的教训）。
+        首次 False/异常 → 沉降 settle 秒再试一次。
+        """
+        for i in range(tries):
+            try:
+                if ad.check_auth(page):
+                    return True
+            except Exception:
+                pass
+            if i < tries - 1:
+                time.sleep(settle)
+        return False
 
     def check(self, platform, account="default"):
         ad = get_adapter(platform)
@@ -127,28 +180,51 @@ class Hub:
             db.upsert_account(self.conn, platform, account, "-",
                               "logined" if ok else "offline")
             return ok
-        br = self._acquire(platform, account)
-        page = None
-        try:
-            page = br.new_page()
-            ok = ad.check_auth(page)
-            # 登录态正常但页面在弹验证码，说明"能登但不一定能操作"，得告诉用户
-            if ok and CaptchaPolicy.detect(page):
+        # B3 补洞（2026-09-22）：check 同样要持 per-key 互斥。
+        # 存量体检（2026-09-22）：浏览器操作全部经 browser_thread_run 下沉
+        # 专属线程——greenlet/循环状态永远单线程，根治 "inside the asyncio
+        # loop" 500（线程池复用 + dispatcher 挂起泄漏循环状态的组合病）。
+        def _op():
+            br = self._acquire(platform, account)
+            page = None
+            try:
+                page = br.new_page()
+                # 关键：check_auth 多在页面上下文里 fetch 平台 API。停在 about:blank
+                # 上是 null 源跨站请求，SameSite cookie 全被拦 → data:null → 永远
+                # 假"未登录"（2026-09-22 掘金复查连假的根因）。先落到平台域再查。
+                target = ad.home_url or ad.login_url
+                if target:
+                    try:
+                        page.goto(target, timeout=60000, wait_until="domcontentloaded")
+                    except Exception:
+                        pass  # 首页打不开不拦着，交给沉降重试兜底
+                ok = self._check_auth_settled(ad, page)
+                if ok:
+                    # 登录态保鲜：检查通过即刷新快照——平台轮换会话后快照
+                    # 跟着最新态走（2026-09-22 "一次登录一直记住"要求）
+                    try:
+                        br.export_auth()
+                    except Exception:
+                        pass
+                # 登录态正常但页面在弹验证码，说明"能登但不一定能操作"，得告诉用户
+                if ok and CaptchaPolicy.detect(page):
+                    db.upsert_account(self.conn, platform, account, str(br.profile_dir),
+                                      "logined")
+                    return ok
                 db.upsert_account(self.conn, platform, account, str(br.profile_dir),
-                                  "logined")
+                                  "logined" if ok else "offline")
                 return ok
-            db.upsert_account(self.conn, platform, account, str(br.profile_dir),
-                              "logined" if ok else "offline")
-            return ok
-        except Exception:
-            self._drop(platform, account)   # 页面出事：踢出池，下次用全新的
-            raise
-        finally:
-            if page is not None:
-                try:
-                    page.close()
-                except Exception:
-                    pass
+            except Exception:
+                self._drop(platform, account)   # 页面出事：踢出池，下次用全新的
+                raise
+            finally:
+                if page is not None:
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
+        with self._busy_for(platform, account):
+            return browser_thread_run(_op)
 
     def diagnose(self, platform):
         """排查端点：这平台到底该怎么接入、验证码怎么过，一目了然。"""
@@ -183,25 +259,28 @@ class Hub:
 
         ensure_display()
         self._drop("cnblogs", account)   # profile 独占，先释放池里的实例
-        br = BuiltinBrowser("cnblogs", account, headless=False)  # 登录必须有头
-        try:
-            r = login_browser(br, username, password,
-                              on_captcha=on_captcha, timeout=timeout)
-            if r.get("outcome") != "success":
+
+        def _op():
+            br = BuiltinBrowser("cnblogs", account, headless=False)  # 登录必须有头
+            try:
+                r = login_browser(br, username, password,
+                                  on_captcha=on_captcha, timeout=timeout)
+                if r.get("outcome") != "success":
+                    db.upsert_account(self.conn, "cnblogs", account, str(br.profile_dir),
+                                      "offline")
+                    return r
+                # 登录成功，抠令牌（username 用登录名，别拿 blogApp 冒充）
+                page = br.new_page()
+                mw = extract_metaweblog(page, save_to=str(ROOT / "config.json"),
+                                        login_username=username)
+                page.close()
                 db.upsert_account(self.conn, "cnblogs", account, str(br.profile_dir),
-                                  "offline")
+                                  "logined")
+                r["metaweblog"] = mw
                 return r
-            # 登录成功，抠令牌（username 用登录名，别拿 blogApp 冒充）
-            page = br.new_page()
-            mw = extract_metaweblog(page, save_to=str(ROOT / "config.json"),
-                                    login_username=username)
-            page.close()
-            db.upsert_account(self.conn, "cnblogs", account, str(br.profile_dir),
-                              "logined")
-            r["metaweblog"] = mw
-            return r
-        finally:
-            br.close()
+            finally:
+                br.close()
+        return browser_thread_run(_op)
 
     def solve_captcha(self, platform, account="default", wait=180):
         """打开平台页面，如果弹验证码就地处理：先半自动，不行转人工。
@@ -213,19 +292,22 @@ class Hub:
         if not ad.needs_browser:
             return {"ok": True, "msg": f"{platform} 走免登 API，不会有验证码"}
         self._drop(platform, account)   # profile 独占，先释放池里的实例
-        br = BuiltinBrowser(platform, account, headless=False)
-        try:
-            page = br.new_page()
-            page.goto(ad.login_url, timeout=60000, wait_until="domcontentloaded")
-            import time as _t
-            _t.sleep(3)
-            kind = CaptchaPolicy.detect(page)
-            if not kind:
-                return {"ok": True, "msg": "当前页面没有验证码"}
-            ok, info = wait_human_captcha(page, platform, timeout=wait)
-            return {"ok": ok, "kind": kind, **info}
-        finally:
-            br.close()
+
+        def _op():
+            br = BuiltinBrowser(platform, account, headless=False)
+            try:
+                page = br.new_page()
+                page.goto(ad.login_url, timeout=60000, wait_until="domcontentloaded")
+                import time as _t
+                _t.sleep(3)
+                kind = CaptchaPolicy.detect(page)
+                if not kind:
+                    return {"ok": True, "msg": "当前页面没有验证码"}
+                ok, info = wait_human_captcha(page, platform, timeout=wait)
+                return {"ok": ok, "kind": kind, **info}
+            finally:
+                br.close()
+        return browser_thread_run(_op)
 
     def accounts(self):
         return [dict(r) for r in db.list_accounts(self.conn)]
@@ -253,8 +335,19 @@ class Hub:
 
     def import_md(self, path, title=None, tags=""):
         from pathlib import Path
-        p = Path(path)
-        text = p.read_text(encoding="utf-8", errors="replace")
+        p = Path(path).expanduser()
+        # 路径越权防护：只允许导入项目根内的 Markdown 文件，拒绝符号链接逃逸。
+        # 对标 2026 最小权限实践——API 客户端不应能借 import 读机器任意文件。
+        root = ROOT.resolve()
+        try:
+            target = p.resolve()
+        except Exception:
+            raise ValueError(f"非法导入路径: {path}")
+        if not target.is_file():
+            raise ValueError(f"导入文件不存在: {target}")
+        if target != root and root not in target.parents:
+            raise ValueError(f"导入路径越权（仅允许项目目录内）: {target}")
+        text = target.read_text(encoding="utf-8", errors="replace")
         if text.startswith("---"):  # 顺手吃掉 front-matter 当元数据
             parts = text.split("---", 2)
             if len(parts) >= 3:
@@ -271,63 +364,90 @@ class Hub:
 
     # ---------------- 发布 / 更新 ----------------
 
-    def _with_adapter(self, platform, account, fn):
+    def _with_adapter(self, platform, account, fn, page_hook=None):
         """统一入口：需要浏览器的开浏览器，走协议的直接调。
-        浏览器从池里拿，常驻复用；页面用完即关（ctx 保留）。"""
+        浏览器从池里拿，常驻复用；页面用完即关（ctx 保留）。
+        page_hook(page)：页面就绪后回调（实时预览 LiveMonitor 挂载点，D11），
+        必须在浏览器操作线程内调用（greenlet 约束）。"""
         ad = get_adapter(platform)
         if not ad.needs_browser:
             if not ad.check_auth(None):
                 raise PlatformError(f"{platform} 凭据无效，检查 config.json")
             return fn(ad, None)
 
-        page = None
-        for attempt in (1, 2):
-            br = self._acquire(platform, account)
-            try:
-                page = br.new_page()
-                # 先把页面带到平台域再发 API：新开的 page 停在 about:blank 上是
-                # null origin，fetch 属于跨域，cookie 带不上还会被 CORS 拦下。
-                # 落到平台自己的页面上，后面的 api_get/api_post 就是同源请求。
-                try:
-                    page.goto(ad.home_url, timeout=60000, wait_until="domcontentloaded")
-                except Exception:
-                    pass  # 首页打不开不拦着纯 API 调用，尽力继续
-                if not ad.check_auth(page):
-                    raise PlatformError(f"{platform}({account}) 未登录，先跑 login")
-                return fn(ad, page)
-            except PlatformError:
-                raise                       # 业务错误（未登录/配置缺失），重试没意义
-            except Exception as e:
-                if attempt == 2:
-                    raise
-                # 像浏览器/页面崩了的错误：踢出池换全新实例再试一次
-                if any(s in str(e) for s in ("Target closed", "Browser has been closed",
-                                             "Session closed", "浏览器启动失败")):
-                    self._drop(platform, account)
-                    continue
-                raise
-            finally:
-                if page is not None:
+        # B3：同一实例同时只允许一个操作者，等也要等在这（公平串行）。
+        # 存量体检（2026-09-22）：操作体下沉专属浏览器线程（greenlet 同线程）。
+        with self._busy_for(platform, account):
+            def _op():
+                page = None
+                for attempt in (1, 2):
+                    br = self._acquire(platform, account)
                     try:
-                        page.close()
-                    except Exception:
-                        pass
-                    page = None
+                        page = br.new_page()
+                        # 先把页面带到平台域再发 API：新开的 page 停在 about:blank 上是
+                        # null origin，fetch 属于跨域，cookie 带不上还会被 CORS 拦下。
+                        # 落到平台自己的页面上，后面的 api_get/api_post 就是同源请求。
+                        try:
+                            page.goto(ad.home_url, timeout=60000, wait_until="domcontentloaded")
+                        except Exception:
+                            pass  # 首页打不开不拦着纯 API 调用，尽力继续
+                        if not self._check_auth_settled(ad, page):
+                            raise PlatformError(f"{platform}({account}) 未登录，先跑 login")
+                        if page_hook:
+                            try:
+                                page_hook(page)
+                            except Exception:
+                                pass  # 预览挂载失败不影响发布主流程
+                        return fn(ad, page)
+                    except PlatformError:
+                        raise                       # 业务错误（未登录/配置缺失），重试没意义
+                    except Exception as e:
+                        if attempt == 2:
+                            raise
+                        # 像浏览器/页面崩了的错误：踢出池换全新实例再试一次
+                        # （greenlet 跨线程冲突=池实例被别的线程创建，重建即在当前线程）
+                        if any(s in str(e) for s in ("Target closed", "Browser has been closed",
+                                                     "Session closed", "浏览器启动失败",
+                                                     "Cannot switch to a different thread",
+                                                     "greenlet")):
+                            self._drop(platform, account)
+                            continue
+                        raise
+                    finally:
+                        if page is not None:
+                            try:
+                                page.close()
+                            except Exception:
+                                pass
+                            page = None
+            return browser_thread_run(_op)
 
     # ---------------- AI ----------------
 
     def ai_write(self, topic, style="", words=2000, tags_hint="", publish_to=None):
-        """AI 写一篇并入库。传了 publish_to 就顺手发出去。"""
+        """AI 写一篇并入库。传了 publish_to 就顺手发出去。
+
+        合规闸门：AI 源文章发布强制 draft_only（人审闸门），禁止 AI 内容
+        直接正式上线。想上线须人工二次确认后再调 publish(draft_only=False)。
+        """
         from core import ai as ai_mod
         art = ai_mod.write_article(topic, style, words, tags_hint)
+        # 入库前打 AIGC 标识（法规要求显式标识 + 可追溯模型来源）
+        art = aigc_gate.add_aigc_label(art, art.get("ai_model", ""))
+        ext = json.loads(art.get("ext", "{}") or {})
         aid = db.create_article(self.conn, art["title"], art["content_md"],
                                 summary=art["summary"], tags=art["tags"],
-                                source="ai", ai_model=art["ai_model"],
+                                source="ai", ai_model=art.get("ai_model", ""),
+                                ext=json.dumps(ext, ensure_ascii=False),
                                 status="draft")
         out = {"id": aid, "title": art["title"], "summary": art["summary"],
-               "tags": art["tags"], "chars": len(art["content_md"])}
+               "tags": art["tags"], "chars": len(art["content_md"]),
+               "aigc_labeled": True}
         if publish_to:
-            out["publish"] = self.publish(aid, publish_to)
+            # 人审闸门：AI 内容只发草稿，正式上线需人工确认后单独 publish
+            out["publish"] = self.publish(aid, publish_to, draft_only=True)
+            out["note"] = "AI 内容已按合规闸门以草稿(draft_only)发布；" \
+                          "确认无误后请调 /articles/{id}/publish(draft_only=false) 正式上线"
         return out
 
     def ai_rewrite(self, article_id, instruction, publish_to=None):
@@ -357,34 +477,105 @@ class Hub:
         from core import ai as ai_mod
         return ai_mod.is_ready()
 
-    def publish(self, article_id, platforms, account="default", draft_only=False):
+    def publish_single(self, article_id, platform, article, account="default",
+                       draft_only=False, page_hook=None):
+        """发布到单个平台并完成落库（jobs/publications 记账）。
+
+        legacy publish() 循环体与工作流引擎（workflows.nodes.publish_platform）
+        共用的唯一发布原语。成功返回结果 dict（platform/ok/status/post_id/...），
+        失败在完成失败记账后抛异常。
+        """
+        job = db.add_job(self.conn, "publish", article_id, platform)
+        try:
+            def _do(ad, page):
+                return ad.publish(page, article, {"draft_only": draft_only})
+            r = self._with_adapter(platform, account, _do, page_hook=page_hook)
+            # 体检 B1 修复（QA 标质力 2026-09-21）：适配器返回 error 键时
+            # 必须走失败分支，否则"发布未完成"会被静默记成"发布成功"
+            if r.get("error"):
+                raise PlatformError(str(r["error"]))
+            warning = r.get("warning", "")
+            # 体检 B10 修复：非用户主动要求的 draft_only（如掘金自动发布
+            # 失败回落到草稿）→ 记 pending_human，可程序化列出"哪些草稿
+            # 等人点发布"；这类平台不算发布完成，文章状态收敛保持 draft
+            status = "ok"
+            if r.get("draft_only") and not draft_only:
+                status = "pending_human"
+            db.upsert_publication(self.conn, article_id, platform, account,
+                                  post_id=r.get("post_id", ""),
+                                  post_url=r.get("post_url", ""),
+                                  edit_url=r.get("edit_url", ""),
+                                  status=status,
+                                  draft_only=1 if r.get("draft_only") else 0,
+                                  published_at=db.now())
+            db.finish_job(self.conn, job, True,
+                          "发布成功" + (f"（警告: {warning}）" if warning else ""))
+            out = {"platform": platform, "ok": True, "status": status,
+                   "post_id": r.get("post_id", ""), "post_url": r.get("post_url", ""),
+                   "edit_url": r.get("edit_url", ""),
+                   "draft_only": r.get("draft_only", "")}
+            # 适配器可能带回额外键，透传（不含内部键）
+            out.update({k: v for k, v in r.items()
+                        if k not in ("error", "warning", "post_id", "post_url",
+                                     "edit_url", "draft_only")})
+            if warning:
+                out["warning"] = warning
+            return out
+        except Exception as e:
+            db.upsert_publication(self.conn, article_id, platform, account,
+                                  status="failed", last_error=str(e)[:300])
+            db.finish_job(self.conn, job, False, str(e)[:300])
+            raise
+
+    def publish(self, article_id, platforms, account="default", draft_only=False,
+                page_hook=None):
         art = self.get(article_id)
         if not art:
             raise ValueError(f"文章 {article_id} 不存在")
+        # AIGC 合规门禁：发布前强制过闸（安全扫描 + 双模型审查 + 人审闸门）
+        try:
+            gate_r = aigc_gate.apply_gate_before_publish(art, draft_only=draft_only)
+        except aigc_gate.GateError as ge:
+            # 门禁拒绝：记入 jobs（每个平台各一条），便于 /ai/gate 端点追溯
+            for pf in platforms:
+                jid = db.add_job(self.conn, "publish", article_id, pf)
+                db.finish_job(self.conn, jid, False, f"合规门禁拒绝: {str(ge)[:200]}")
+            # 抛 HTTPException（422 语义"内容不合规"），让 FastAPI 返回 4xx 而非 500
+            from fastapi import HTTPException
+            raise HTTPException(422, f"合规门禁拒绝发布: {ge}")
+        art = gate_r["article"]   # AI 源已打 AIGC 标识
+        if not (art.get("title") or "").strip():
+            raise ValueError("文章标题为空，拒绝发布（B19 预检）")
         results = []
-        for pf in platforms:
-            job = db.add_job(self.conn, "publish", article_id, pf)
-            try:
-                def _do(ad, page, pf=pf):
-                    return ad.publish(page, art, {"draft_only": draft_only})
-                r = self._with_adapter(pf, account, _do)
-                db.upsert_publication(self.conn, article_id, pf, account,
-                                      post_id=r.get("post_id", ""),
-                                      post_url=r.get("post_url", ""),
-                                      edit_url=r.get("edit_url", ""),
-                                      status="ok",
-                                      draft_only=1 if r.get("draft_only") else 0,
-                                      published_at=db.now())
-                db.update_article(self.conn, article_id, status="published")
-                db.finish_job(self.conn, job, True, "发布成功")
-                results.append({"platform": pf, "ok": True, **r})
-            except Exception as e:
-                db.upsert_publication(self.conn, article_id, pf, account,
-                                      status="failed", last_error=str(e)[:300])
-                db.finish_job(self.conn, job, False, str(e)[:300])
-                results.append({"platform": pf, "ok": False, "error": str(e)})
-            if pf != platforms[-1]:
-                time.sleep(random.uniform(*self.delay_platform))
+        all_ok = True
+        # 发布链路 trace：所有平台子步骤串进同一 trace_id，事后看卡点
+        with TraceContext("publish", article_id=article_id,
+                          platforms=platforms, draft_only=draft_only,
+                          account=account, aigc=gate_r.get("aigc_labeled", False)) as tctx:
+            for pf in platforms:
+                _t0 = time.time()
+                try:
+                    r = self.publish_single(article_id, pf, art, account=account,
+                                            draft_only=draft_only, page_hook=page_hook)
+                except Exception as e:
+                    all_ok = False
+                    results.append({"platform": pf, "ok": False, "error": str(e)})
+                    tctx.step(f"{pf}.publish", dur=time.time() - _t0, ok=False,
+                               detail=str(e)[:160])
+                else:
+                    # 体检 B10 修复（QA 标质力 2026-09-21）：回落草稿（pending_human）
+                    # 不算发布完成，文章状态收敛保持 draft
+                    if r.get("status") == "pending_human":
+                        all_ok = False
+                    results.append(r)
+                    tctx.step(f"{pf}.publish", dur=time.time() - _t0, ok=True,
+                               detail=str(r.get("post_id", ""))[:80])
+                if pf != platforms[-1]:
+                    time.sleep(random.uniform(*self.delay_platform))
+        # 状态收敛：全部成功才标 published；有失败保持 draft 并留待重试，
+        # 避免中间一个平台失败就把整篇文章误标成已发布
+        if all_ok and not draft_only:
+            db.update_article(self.conn, article_id, status="published")
         return results
 
     def update(self, article_id, platforms=None, account="default"):
@@ -417,19 +608,26 @@ class Hub:
                                       last_error=str(e)[:300])
                 db.finish_job(self.conn, job, False, str(e)[:300])
                 results.append({"platform": pf, "ok": False, "error": str(e)})
-            time.sleep(random.uniform(*self.delay_article))
+            # 体检 B12 修复（QA 标质力 2026-09-21）：最后一个平台不再空等 30-90s
+            if p is not pubs[-1]:
+                time.sleep(random.uniform(*self.delay_article))
         return results
 
     def sync_pending(self, account="default"):
-        """把内容变更同步到所有已发布平台——AI 改完文章点这个就完事。"""
+        """把内容变更同步到所有已发布平台——AI 改完文章点这个就完事。
+        按文章聚合其全部 pending 平台，一次 update 同步到位，避免逐行漏同步。"""
         rows = db.get_pending_updates(self.conn)
-        out = []
+        by_article = {}
         for r in rows:
-            out.append({"article_id": r["article_id"], "title": r["title"],
-                        **{p["platform"]: p for p in []}})
-            res = self.update(r["article_id"],
-                              platforms=[r["platform"]], account=account)
-            out[-1]["result"] = res.get("results") if isinstance(res, dict) else res
+            by_article.setdefault(r["article_id"], {"title": r["title"], "platforms": []})
+            by_article[r["article_id"]]["platforms"].append(r["platform"])
+        out = []
+        for aid, info in by_article.items():
+            platforms = sorted(set(info["platforms"]))
+            res = self.update(aid, platforms=platforms, account=account)
+            out.append({"article_id": aid, "title": info["title"],
+                        "platforms": platforms,
+                        "result": res.get("results") if isinstance(res, dict) else res})
         return out
 
     def refresh(self, platform, account="default", limit=50):

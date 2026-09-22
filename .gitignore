@@ -1,6 +1,8 @@
 # 凭据与运行时数据（config.json 里全是密钥，绝不进库）
 config.json
+.env
 data/
+*.auth.json
 
 # Python
 __pycache__/

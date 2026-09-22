@@ -9,14 +9,18 @@
       :ai-ready="hub.aiReady"
       :loading="hub.loadingList"
       :list-docked="listDocked"
+      :view="hub.view"
+      :pending-count="hub.pendingHuman.length"
       @open-list="listDrawer = true"
+      @switch="hub.switchView($event)"
       @reload="hub.boot()"
       @sync="hub.syncPending()"
       @ai-write="aiDialog = true"
       @new="hub.newArticle()"
     />
 
-    <main class="layout" :class="{ 'docked-list': listDocked, 'docked-side': sideDocked }">
+    <!-- 写作视图：列表 + 编辑器，干净的两栏 -->
+    <main v-if="hub.view === 'write'" class="layout" :class="{ 'docked-list': listDocked }">
       <ArticleList
         v-if="listDocked"
         v-model:keyword="hub.keyword"
@@ -36,34 +40,28 @@
         :saving="hub.saving"
         @save="hub.save()"
         @touch="hub.dirty = true"
+        @publish="wizard = true"
         @ai-rewrite="onRewrite"
         @ai-polish="onPolish"
       />
       <div v-else class="pane pane-center">
         <EmptyState
-          :px="52"
-          title="开始写一稿"
-          desc="选一篇文章继续编辑，或者新建一篇，写完勾选平台一键发全网"
+          :px="58"
+          title="墨迹未干"
+          desc="挑一篇接着写，或新起一稿。写完点右上「发布」一发出网。"
         >
-          <el-button type="primary" :icon="Plus" @click="hub.newArticle()">新建文章</el-button>
-          <el-button :icon="MagicStick" @click="aiDialog = true">让 AI 写</el-button>
+          <el-button type="primary" :icon="Plus" @click="hub.newArticle()">起一稿新文</el-button>
+          <el-button :icon="MagicStick" @click="aiDialog = true">让 AI 落笔</el-button>
         </EmptyState>
       </div>
-
-      <SidePanel
-        v-if="sideDocked"
-        :platforms="hub.platforms"
-        :pubs="hub.publications"
-        :accounts="hub.accounts"
-        :busy="hub.publishing"
-        :refreshing="refreshing"
-        @publish="(p, d) => hub.publish(p, d)"
-        @update="hub.updateRemote($event)"
-        @refresh="onRefresh"
-      />
     </main>
 
-    <!-- 窄屏：列表和侧栏改成抽屉 -->
+    <!-- 管理视图：待人工 / 发布记录 / 平台与账号，宽屏三标签 -->
+    <main v-else class="layout single">
+      <ManagePanel />
+    </main>
+
+    <!-- 窄屏：列表改成抽屉 -->
     <el-drawer v-if="!listDocked" v-model="listDrawer" direction="ltr" size="86%" :with-header="false">
       <ArticleList
         v-model:keyword="hub.keyword"
@@ -75,24 +73,7 @@
       />
     </el-drawer>
 
-    <el-drawer v-if="!sideDocked" v-model="sideDrawer" direction="rtl" size="86%" :with-header="false">
-      <SidePanel
-        :platforms="hub.platforms"
-        :pubs="hub.publications"
-        :accounts="hub.accounts"
-        :busy="hub.publishing"
-        :refreshing="refreshing"
-        @publish="(p, d) => hub.publish(p, d)"
-        @update="hub.updateRemote($event)"
-        @refresh="onRefresh"
-      />
-    </el-drawer>
-
-    <!-- 手机端浮动操作条：没有侧栏，必须给个入口 -->
-    <div v-if="!sideDocked" class="fab" @click="sideDrawer = true">
-      <el-icon><Promotion /></el-icon>
-      <span>发布</span>
-    </div>
+    <PublishWizard v-model="wizard" />
 
     <AIWriteDialog
       v-model="aiDialog"
@@ -108,32 +89,27 @@
 import { ref, onMounted, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
-import { Promotion, Plus, MagicStick } from '@element-plus/icons-vue'
+import { Plus, MagicStick } from '@element-plus/icons-vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useHubStore } from '@/stores/hub'
 import { api } from '@/api'
 import AppHeader from '@/components/AppHeader.vue'
 import ArticleList from '@/components/ArticleList.vue'
 import ArticleEditor from '@/components/ArticleEditor.vue'
-import SidePanel from '@/components/SidePanel.vue'
+import PublishWizard from '@/components/PublishWizard.vue'
+import ManagePanel from '@/components/ManagePanel.vue'
 import AIWriteDialog from '@/components/AIWriteDialog.vue'
 import EmptyState from '@/components/EmptyState.vue'
 
 const hub = useHubStore()
-const { listDocked, sideDocked } = useBreakpoint()
+const { listDocked } = useBreakpoint()
 
 const listDrawer = ref(false)
-const sideDrawer = ref(false)
+const wizard = ref(false)
 const aiDialog = ref(false)
 const refreshing = ref(false)
 
 onMounted(() => hub.boot())
-
-// 从窄屏变宽屏时把抽屉收起来，免得残留遮罩
-watch([listDocked, sideDocked], ([l, s]) => {
-  if (l) listDrawer.value = false
-  if (s) sideDrawer.value = false
-})
 
 async function onOpen(id) {
   await hub.open(id)

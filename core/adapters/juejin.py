@@ -35,6 +35,21 @@ def _click_text(page, texts, timeout=8000):
     raise PlatformError(f"页面上找不到这些按钮: {texts}")
 
 
+def tag_name_for_search(category):
+    """把掘金分类名映射为 tag 搜索词。"""
+    mapping = {
+        "前端": "JavaScript",
+        "后端": "Python",
+        "android": "Android",
+        "ios": "iOS",
+        "人工智能": "机器学习",
+        "开发工具": "开发工具",
+        "代码人生": "程序员",
+        "阅读": "技术",
+    }
+    return mapping.get(category, "Python")
+
+
 @register
 class JuejinAdapter(PlatformAdapter):
     id = "juejin"
@@ -124,9 +139,17 @@ class JuejinAdapter(PlatformAdapter):
         brief = (article.get("summary")
                  or (article.get("content_md", "")[:100].replace("\n", " ")))
 
+        # 确保在掘金域名下（cookie 需要）
+        if "juejin.cn" not in page.url:
+            page.goto(self.home_url, timeout=60000, wait_until="domcontentloaded")
+            time.sleep(2)
+
+        # 标签：至少带一个 Python / 后端 常用标签（掘金 7104 = Python）
+        tag_ids = options.get("tag_ids") or ["7104"]
+
         payload = {
             "category_id": cat_id,
-            "tag_ids": [],
+            "tag_ids": tag_ids,
             "link_url": "",
             "cover_image": article.get("cover") or "",
             "title": article["title"],
@@ -148,14 +171,57 @@ class JuejinAdapter(PlatformAdapter):
                     "edit_url": f"https://juejin.cn/editor/drafts/{draft_id}",
                     "draft_only": True}
 
-        res = self.api_post(page, f"{API}/content_api/v1/article/publish?aid={AID}&spider=0",
-                            {"draft_id": draft_id, "sync_to_org": False, "column_ids": []})
-        article_id = (res.get("data") or {}).get("article_id") or draft_id
+        # ====== 掘金 2026-09：publish API 已封死，走 UI 面板发布 ======
+        # 流程：进编辑器 → 点"发布"按钮开面板 → 点"确定并发布"
+        # 注意：2026-09 前端点"确定并发布"后只发 article_draft/update，
+        # 不发 article/publish。如果 URL 没跳到 /post/xxx，说明发布未成功。
+        # 此时返回 draft-only 结果，用户需手动在浏览器里点一次"确定并发布"。
+
+        # 1. 进草稿编辑器
+        page.goto(f"https://juejin.cn/editor/drafts/{draft_id}",
+                  timeout=60000, wait_until="domcontentloaded")
+        time.sleep(6)
+
+        # 2. 点"发布"按钮（.xitu-btn 主按钮），打开右侧发布面板
+        try:
+            page.locator("button.xitu-btn").filter(has_text="发布").first.click(timeout=8000)
+        except Exception:
+            page.locator("button:has-text('发布')").first.click(timeout=8000)
+        time.sleep(4)
+
+        # 3. 直接点"确定并发布"（草稿创建时已带 tag_ids，面板里 tag 显示正确）
+        try:
+            page.locator("button:has-text('确定并发布')").first.click(timeout=8000)
+        except Exception:
+            try:
+                page.locator("button.ui-btn.btn.primary").last.click(timeout=8000)
+            except Exception:
+                pass
+        time.sleep(10)
+
+        # 4. 检查 URL 是否跳到 /post/xxx
+        article_id = ""
+        for _ in range(5):
+            if "/post/" in page.url:
+                article_id = page.url.split("/post/")[-1].split("?")[0].split("/")[0]
+                break
+            time.sleep(2)
+
+        if article_id:
+            return {
+                "post_id": article_id,
+                "post_url": f"https://juejin.cn/post/{article_id}",
+                "edit_url": f"https://juejin.cn/editor/drafts/{draft_id}",
+                "draft_only": False,
+            }
+
+        # 5. 发布未成功——返回 draft-only（用户可手动在浏览器里完成最后一步）
         return {
-            "post_id": article_id,
-            "post_url": f"https://juejin.cn/post/{article_id}",
+            "post_id": draft_id,
+            "post_url": "",
             "edit_url": f"https://juejin.cn/editor/drafts/{draft_id}",
-            "draft_only": False,
+            "draft_only": True,
+            "warning": "掘金 2026-09 版 publish API 变更，自动发布未成功，草稿已创建，请手动在浏览器里点'确定并发布'",
         }
 
     # ---------------- 原地更新 ----------------

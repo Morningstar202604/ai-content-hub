@@ -58,8 +58,16 @@ def _creds():
             "博客园已取消密码登录，必须填「MetaWeblog 访问令牌」")
     c["secret"] = c.get("token") or c.get("password")
     c["using_token"] = bool(c.get("token"))
+    # 占位符守卫：endpoint/username/token 任一带中文，说明还是模板值没换成真凭据。
+    # 不拦的话，XML-RPC 会在发请求时抛晦涩的 UnicodeEncodeError，用户看不懂该去填配置。
+    for k in ("endpoint", "username", "secret"):
+        v = str(c.get(k, ""))
+        if any("\u4e00" <= ch <= "\u9fff" for ch in v):
+            raise PlatformError(
+                f"config.json 里 platforms.cnblogs.{k} 还是占位符，没换成真实值。"
+                "去博客园 管理→设置→其他设置 勾「允许 MetaWeblog 访问」，"
+                "把真实的 endpoint / 登录名 / 访问令牌填进去。")
     return c
-
 
 def _client():
     c = _creds()
@@ -81,7 +89,7 @@ class CnblogsAdapter(PlatformAdapter):
     def check_auth(self, page=None) -> bool:
         try:
             s, c = _client()
-            blogs = s.blogger.getUsersBlogs("", c["username"], c["password"])
+            blogs = s.blogger.getUsersBlogs("", c["username"], c["secret"])
             return bool(blogs)
         except xmlrpc.client.ProtocolError as e:
             # 博客园对"凭据错 / blogApp 错"统一返回 500，不告诉你哪个错，只能自己排查
@@ -98,11 +106,11 @@ class CnblogsAdapter(PlatformAdapter):
     def whoami(self):
         """排查用：把 endpoint 和拿到的博客信息打出来（不含密码）。"""
         s, c = _client()
-        blogs = s.blogger.getUsersBlogs("", c["username"], c["password"])
+        blogs = s.blogger.getUsersBlogs("", c["username"], c["secret"])
         return {"endpoint": c["endpoint"], "username": c["username"], "blogs": blogs}
 
     def _blogid(self, s, c):
-        blogs = s.blogger.getUsersBlogs("", c["username"], c["password"])
+        blogs = s.blogger.getUsersBlogs("", c["username"], c["secret"])
         if not blogs:
             raise PlatformError("拿不到 blogid，检查 MetaWeblog 是否开通")
         return blogs[0]["blogid"]
@@ -112,7 +120,7 @@ class CnblogsAdapter(PlatformAdapter):
     def list_articles(self, page=None, limit=50):
         s, c = _client()
         bid = self._blogid(s, c)
-        posts = s.metaWeblog.getRecentPosts(bid, c["username"], c["password"], limit)
+        posts = s.metaWeblog.getRecentPosts(bid, c["username"], c["secret"], limit)
         out = []
         for p in posts:
             pid = str(p.get("postid", ""))
@@ -140,7 +148,7 @@ class CnblogsAdapter(PlatformAdapter):
             "dateCreated": xmlrpc.client.DateTime(datetime.now()),
         }
         publish_flag = not options.get("draft_only")
-        pid = s.metaWeblog.newPost(bid, c["username"], c["password"], struct, publish_flag)
+        pid = s.metaWeblog.newPost(bid, c["username"], c["secret"], struct, publish_flag)
         pid = str(pid)
         return {"post_id": pid,
                 "post_url": f"https://www.cnblogs.com/p/{pid}.html",
@@ -162,7 +170,7 @@ class CnblogsAdapter(PlatformAdapter):
             "dateCreated": xmlrpc.client.DateTime(datetime.now()),
         }
         # MetaWeblog 的 editPost 是全额覆盖，天然就是"原地更新"
-        ok = s.metaWeblog.editPost(pid, c["username"], c["password"], struct, True)
+        ok = s.metaWeblog.editPost(pid, c["username"], c["secret"], struct, True)
         if not ok:
             raise PlatformError(f"editPost 返回 {ok}")
         return True

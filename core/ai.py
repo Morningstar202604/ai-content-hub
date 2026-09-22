@@ -28,7 +28,24 @@ def _cfg(key, default=None):
     return os.environ.get(key) or _file_cfg().get(key) or default
 
 
+def _load_dotenv():
+    """零依赖 .env 加载：项目根 .env 里的 KEY=VALUE 作为最底层兜底。
+    不覆盖已存在的真实环境变量，不覆盖 config.json 已解析的值。"""
+    env_file = ROOT / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key, val = key.strip(), val.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = val
+
+
 def _file_cfg():
+    _load_dotenv()
     if CONFIG_FILE.exists():
         try:
             return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))

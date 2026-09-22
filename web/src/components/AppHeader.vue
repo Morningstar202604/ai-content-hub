@@ -6,17 +6,14 @@
 
     <span class="hdr-sep" />
 
-    <!-- 中部：状态信息，克制呈现 -->
-    <span class="hdr-stats pill" title="文章总数 / 已发布 / 待同步">
-      <span class="dot brand" />
-      文章 <b>{{ stats.articles || 0 }}</b>
-      <span class="sep" />
-      <span class="dot ok" />
-      已发 <b>{{ stats.published || 0 }}</b>
-      <span class="sep" />
-      <span class="dot warn" />
-      待同步 <b>{{ stats.pending_sync || 0 }}</b>
-    </span>
+    <!-- 视图切换：写作（列表+编辑器） / 管理（待人工+发布记录+账号） -->
+    <div class="view-switch">
+      <button class="vs-btn" :class="{ on: view === 'write' }" @click="$emit('switch', 'write')">写作</button>
+      <button class="vs-btn" :class="{ on: view === 'manage' }" @click="$emit('switch', 'manage')">
+        管理
+        <span v-if="pendingCount" class="vs-dot" />
+      </button>
+    </div>
 
     <span class="spacer" />
 
@@ -26,12 +23,12 @@
       <span class="txt">{{ aiReady ? 'AI 就绪' : 'AI 未配置' }}</span>
     </span>
 
-    <el-button :icon="Refresh" :loading="loading" text title="刷新" @click="$emit('reload')" />
-
+    <!-- 次级动作（刷新 / 同步 / AI 写稿）全部折叠进「更多」，导航区只留一个锚点，避免平铺堆叠 -->
     <el-dropdown trigger="click" @command="onMore">
-      <el-button :icon="MoreFilled" text title="更多" />
+      <el-button :icon="MoreFilled" text title="更多" class="hdr-more" />
       <template #dropdown>
         <el-dropdown-menu>
+          <el-dropdown-item command="reload" :icon="Refresh">刷新</el-dropdown-item>
           <el-dropdown-item command="sync" :disabled="!stats.pending_sync" :icon="Upload">
             同步待更新{{ stats.pending_sync ? `（${stats.pending_sync}）` : '' }}
           </el-dropdown-item>
@@ -54,17 +51,43 @@ defineProps({
   stats: { type: Object, default: () => ({}) },
   aiReady: Boolean,
   loading: Boolean,
-  listDocked: Boolean
+  listDocked: Boolean,
+  view: { type: String, default: 'write' },
+  pendingCount: { type: Number, default: 0 }
 })
-const emit = defineEmits(['open-list', 'reload', 'sync', 'ai-write', 'new'])
+const emit = defineEmits(['open-list', 'reload', 'sync', 'ai-write', 'new', 'switch'])
 
 function onMore(cmd) {
-  if (cmd === 'sync') emit('sync')
+  if (cmd === 'reload') emit('reload')
+  else if (cmd === 'sync') emit('sync')
   else if (cmd === 'ai') emit('ai-write')
 }
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+// 视图切换（写作/管理）：极简双钮，当前项亮金下划线
+.view-switch {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  .vs-btn {
+    border: 0; background: transparent; color: var(--tx-3);
+    font-size: var(--fs-sm); padding: 4px 14px; border-radius: 6px;
+    cursor: pointer; position: relative;
+    display: inline-flex; align-items: center; gap: 5px;
+    &:hover { color: var(--tx-1); }
+    &.on {
+      color: var(--tx-1); background: var(--line-soft);
+      box-shadow: inset 0 -2px 0 var(--accent-hi);
+    }
+  }
+  .vs-dot {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--warn);
+  }
+}
+
 .pill .sep {
   width: 1px;
   height: 11px;
@@ -90,5 +113,11 @@ function onMore(cmd) {
     &.off { background: var(--tx-4); }
   }
   &.on .txt { color: var(--tx-2); }
+}
+
+// 窄屏：AI 状态只留圆点，把宽度让给「更多/新建」，避免按钮堆叠挤压
+@media (max-width: 560px) {
+  .ai-state .txt { display: none; }
+  .ai-state { padding: 0 2px; }
 }
 </style>

@@ -1,5 +1,5 @@
 <template>
-  <el-dialog v-model="visible" title="AI 写稿" width="560px" :close-on-click-modal="false">
+  <el-dialog v-model="visible" title="AI 落笔" width="560px" :close-on-click-modal="false" class="ai-write-dialog">
     <el-alert v-if="!ready" type="warning" :closable="false" show-icon
               title="AI 未配置"
               description="在 config.json 或环境变量里填 AI_API_KEY / AI_BASE_URL / AI_MODEL 后重启后端即可。" />
@@ -8,7 +8,7 @@
       <el-form-item label="主题" required>
         <el-input v-model="form.topic" placeholder="例如：用 Python 手写一个任务队列" />
       </el-form-item>
-      <el-form-item label="风格">
+      <el-form-item label="文风">
         <el-select v-model="form.style" placeholder="默认：技术干货" style="width:100%">
           <el-option label="技术干货" value="技术干货，有代码示例" />
           <el-option label="通俗科普" value="通俗易懂，面向初学者" />
@@ -32,11 +32,19 @@
     <template #footer>
       <el-button @click="visible = false">取消</el-button>
       <el-button type="primary" :loading="loading" :disabled="!form.topic.trim()" @click="submit">
-        开始写
+        开始落笔
       </el-button>
     </template>
   </el-dialog>
 </template>
+
+<style scoped>
+:deep(.el-dialog__title) {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+</style>
 
 <script setup>
 import { ref, reactive, watch } from 'vue'

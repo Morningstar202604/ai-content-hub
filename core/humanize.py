@@ -20,8 +20,24 @@ import random
 import time
 
 
+def gaussian_delay(center, spread, min_ms=0.0, max_ms=5.0):
+    """高斯分布延迟（秒）。比 uniform 更接近真人——真人反应时间不是均匀散开，
+    而是集中在某个均值附近、偶发长尾。
+
+    center=期望延迟，spread=标准差（越大越"随意"）。clip 防止出现极端 outlier。
+    对标 2026 行为指纹检测：uniform 序列熵偏高会被风控识别，高斯更贴近 HMM 行为模型。
+    """
+    val = random.gauss(center, spread)
+    val = max(min_ms, min(max_ms, val))
+    return val
+
+
 def human_pause(a=0.4, b=1.4):
-    time.sleep(random.uniform(a, b))
+    """行为停顿。内部用高斯分布模拟真人"犹豫/思考"的节奏，比原来 uniform 更真实。
+    a/b 仍作为分布的期望上下界，兼容旧调用。"""
+    center = (a + b) / 2
+    spread = (b - a) / 4
+    time.sleep(gaussian_delay(center, spread, min_ms=0.05, max_ms=8.0))
 
 
 def human_type(page, selector, text, wpm_range=(240, 420)):
@@ -73,12 +89,12 @@ def human_mouse_move(page, x, y, steps=None):
         # 二次贝塞尔
         px = (1 - t) ** 2 * sx + 2 * (1 - t) * t * cx + t ** 2 * x
         py = (1 - t) ** 2 * sy + 2 * (1 - t) * t * cy + t ** 2 * y
-        # 抖动
-        px += random.uniform(-1.5, 1.5)
-        py += random.uniform(-1.5, 1.5)
+        # 高斯噪声抖动（比 uniform 更接近人手微颤的自然分布）
+        px += random.gauss(0, 1.2)
+        py += random.gauss(0, 1.2)
         page.mouse.move(px, py)
-        # 速度先快后慢，像真人临近目标会减速
-        time.sleep(max(0.004, 0.02 * (1.35 - t)))
+        # 速度先快后慢，像真人临近目标会减速（加高斯抖动）
+        time.sleep(max(0.004, 0.02 * (1.35 - t) + random.gauss(0, 0.004)))
 
     try:
         page.evaluate(f"() => {{ window.__lastX = {x}; window.__lastY = {y}; }}")

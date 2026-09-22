@@ -6,19 +6,23 @@
 """
 
 import json
+import os
 import sys
 import time
+from ipaddress import ip_address, ip_network
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
 
 from core.service import Hub
+from core import observability as obs
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -27,7 +31,8 @@ hub = Hub(headless=True)
 
 # ---------------- 可选 API 鉴权 ----------------
 # config.json 里配 "api_token": "一串随机字符串" 即启用：
-# 除 /static 与根路径外，所有请求必须带 X-API-Token 头。默认不配 = 不启用（本地用）。
+# 非信任来源的除 /static 与根路径外所有请求，必须带 X-API-Token 头。默认不配 = 不启用（本地用）。
+# 信任来源：本机回环 / testclient / 信任网段（可经环境变量 TRUSTED_NETS 追加 CIDR）。
 def _api_token():
     try:
         return (json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
@@ -36,14 +41,91 @@ def _api_token():
         return ""
 
 
+def _trusted_sources():
+    """本机回环 + 测试客户端 + 配置的信任网段（CIDR）。"""
+    nets = ["127.0.0.0/8", "::1/128"]
+    extra = os.environ.get("TRUSTED_NETS", "").strip()
+    if extra:
+        nets += [n.strip() for n in extra.split(",") if n.strip()]
+    return nets
+
+
+def _client_ip(request):
+    """反代感知取真实客户端 IP：优先 X-Forwarded-For 首个，回退到直连 host。"""
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        first = fwd.split(",")[0].strip()
+        try:
+            return ip_address(first)
+        except ValueError:
+            pass
+    host = request.client.host if request.client else ""
+    if host:
+        try:
+            return ip_address(host)
+        except ValueError:
+            pass
+    return None
+
+
+def _is_trusted(request):
+    ip = _client_ip(request)
+    if ip is None:
+        return False
+    for net in _trusted_sources():
+        try:
+            if ip in ip_network(net, strict=False):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 @app.middleware("http")
 async def _auth(request, call_next):
-    if request.client and request.client.host not in ("127.0.0.1", "::1", "testclient"):
-        token = _api_token()
-        if token and request.headers.get("X-API-Token") != token \
-                and not request.url.path.startswith("/static"):
-            return JSONResponse({"detail": "无效的 API Token"}, status_code=401)
+    token = _api_token()
+    if token and not _is_trusted(request) \
+            and request.headers.get("X-API-Token") != token \
+            and not request.url.path.startswith("/static"):
+        return JSONResponse({"detail": "无效的 API Token"}, status_code=401)
     return await call_next(request)
+
+
+# ---------------- 可观测性：结构化 access log + 指标 ----------------
+# 每个 API 请求落一条 JSON 行到 data/observability/events.log，
+# 带 method/path/status/duration/client_ip，排障时直接 grep 链路。
+# /static 与 /metrics 自身不记录（避免指标端点把日志刷爆）。
+
+_LOG_SKIP = ("/static/", "/metrics", "/health", "/docs", "/openapi.json", "/redoc")
+
+
+@app.middleware("http")
+async def _access_log(request, call_next):
+    t0 = time.time()
+    resp = await call_next(request)
+    dur = round(time.time() - t0, 3)
+    path = request.url.path
+    if not any(path.startswith(s) for s in _LOG_SKIP):
+        status = getattr(resp, "status_code", 0)
+        ok = 200 <= status < 400
+        obs.METRICS.incr(f"api.{ 'ok' if ok else 'fail' }")
+        obs.METRICS.observe("api.dur", dur)
+        obs.METRICS.incr(f"api.{request.method.lower()}.hits")
+        obs.emit("api.access",
+                 method=request.method, path=path, status=status,
+                 duration=dur,
+                 client_ip=(request.client.host if request.client else ""))
+    return resp
+
+# ---------------- CORS（默认仅同源；跨域部署时用环境变量 CORS_ORIGINS 白名单） ----------------
+_cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_headers=["*"],
+    )
 
 STATIC = Path(__file__).resolve().parent / "static"
 
@@ -81,6 +163,7 @@ class PublishIn(BaseModel):
     platforms: List[str]
     account: str = "default"
     draft_only: bool = False
+    live: bool = False      # true=附带实时预览页（异步端点专用）
 
 
 class UpdateIn(BaseModel):
@@ -155,6 +238,98 @@ def publish(aid: int, body: PublishIn):
     return hub.publish(aid, body.platforms, body.account, body.draft_only)
 
 
+# 体检 B5 修复（QA 标质力 2026-09-21）：发布是 70s+ 的长任务，同步 HTTP 必超时。
+# 仿 LOGIN_TASKS 模式加异步任务：立即返回 task_id，轮询取结果。原同步端点保留
+# （Web 前端零改动）；AI/无人值守调用走这个异步口。live=True 时附带实时预览页。
+PUBLISH_TASKS = {}
+PUBLISH_TASK_TTL = 1800     # 完成后保留 30 分钟（含预览页观看窗口）
+PUBLISH_TASK_MAX = 50
+
+
+def _gc_publish_tasks():
+    now_ts = time.time()
+    dead = [k for k, v in PUBLISH_TASKS.items()
+            if v.get("status") != "running"
+            and now_ts - v.get("finished_at", now_ts) > PUBLISH_TASK_TTL]
+    for k in dead:
+        mon = PUBLISH_TASKS[k].pop("_monitor", None)
+        if mon:
+            try:
+                mon.stop()
+            except Exception:
+                pass
+        PUBLISH_TASKS.pop(k, None)
+    while len(PUBLISH_TASKS) > PUBLISH_TASK_MAX:
+        k = next(iter(PUBLISH_TASKS))
+        mon = PUBLISH_TASKS[k].pop("_monitor", None)
+        if mon:
+            try:
+                mon.stop()
+            except Exception:
+                pass
+        PUBLISH_TASKS.pop(k, None)
+
+
+@app.post("/articles/{aid}/publish/async")
+def publish_async(aid: int, body: PublishIn):
+    """异步发布：立即返回 task_id，轮询 GET /publish/tasks/{task_id}。
+    live=true 时同线程挂 LiveMonitor（CDP 截屏流），返回的 preview_url
+    可直接在应用内置浏览器面板打开围观整个发布过程。"""
+    import threading
+    import uuid
+    task_id = uuid.uuid4().hex[:10]
+    PUBLISH_TASKS[task_id] = {
+        "task_id": task_id, "article_id": aid, "platforms": body.platforms,
+        "account": body.account, "draft_only": body.draft_only,
+        "status": "running", "message": "排队中…", "result": None,
+    }
+
+    def _run():
+        mon = None
+        try:
+            hook = None
+            if body.live:
+                from core.liveview import LiveMonitor
+                mon = LiveMonitor(port=0, platform="+".join(body.platforms))
+                mon.start()
+                PUBLISH_TASKS[task_id]["preview_url"] = mon.url()
+                PUBLISH_TASKS[task_id]["_monitor"] = mon
+
+                def hook(page):
+                    # CDP 截屏由浏览器推帧，规避 greenlet 线程限制
+                    mon.attach_cdp(page)
+                    mon.log(f"发布任务 {task_id} 开始：{body.platforms}")
+
+            result = hub.publish(aid, body.platforms, body.account,
+                                 body.draft_only, page_hook=hook)
+            PUBLISH_TASKS[task_id].update(status="success", result=result,
+                                          finished_at=time.time(),
+                                          message="发布完成")
+            if mon:
+                mon.log("发布任务完成 ✓")
+        except Exception as e:
+            PUBLISH_TASKS[task_id].update(
+                status="failed", message=f"{type(e).__name__}: {e}",
+                finished_at=time.time())
+            if mon:
+                mon.log(f"发布任务失败 ✗ {type(e).__name__}: {str(e)[:120]}")
+        _gc_publish_tasks()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"task_id": task_id, "status": "running",
+            "poll": f"/publish/tasks/{task_id}"}
+
+
+@app.get("/publish/tasks/{task_id}")
+def publish_task_status(task_id: str):
+    """轮询异步发布任务：running / success / failed（含 result 与 preview_url）。"""
+    task = PUBLISH_TASKS.get(task_id)
+    if not task:
+        return {"task_id": task_id, "status": "unknown",
+                "message": "任务不存在或已过期（保留 30 分钟）"}
+    return {k: v for k, v in task.items() if not k.startswith("_")}
+
+
 @app.post("/articles/{aid}/update")
 def update(aid: int, body: UpdateIn):
     return hub.update(aid, body.platforms, body.account)
@@ -165,11 +340,34 @@ def sync_pending():
     return hub.sync_pending()
 
 
+@app.get("/pending-human")
+def pending_human():
+    """需要人工处理的发布实例（如掘金草稿等人点"确定并发布"）。
+    前端轮询这个端点做角标提醒；点"去处理"直接打开草稿编辑页。"""
+    rows = hub.conn.execute(
+        """SELECT p.article_id, a.title, p.platform, p.account, p.edit_url,
+                  p.post_id, p.updated_at
+           FROM publications p LEFT JOIN articles a ON a.id = p.article_id
+           WHERE p.status = 'pending_human'
+           ORDER BY p.updated_at DESC""").fetchall()
+    return [dict(r) for r in rows]
+
+
 @app.get("/publications")
 def publications(article_id: int = None, platform: str = None):
-    return [dict(r) for r in hub.conn.execute(
-        "SELECT * FROM publications WHERE (? IS NULL OR article_id=?) AND (? IS NULL OR platform=?)",
-        (article_id, article_id, platform, platform)).fetchall()]
+    # 动态参数化：占位符与实参一一对应，避免把「过滤为 None 则不过滤」压进隐式 SQL
+    # 联查文章标题（管理视图直接显示标题，不用拿 ID 再查一遍）
+    sql = ("SELECT p.*, a.title FROM publications p "
+           "LEFT JOIN articles a ON a.id = p.article_id WHERE 1=1")
+    args = []
+    if article_id is not None:
+        sql += " AND p.article_id=?"
+        args.append(article_id)
+    if platform is not None:
+        sql += " AND p.platform=?"
+        args.append(platform)
+    sql += " ORDER BY p.updated_at DESC"
+    return [dict(r) for r in hub.conn.execute(sql, args).fetchall()]
 
 
 # ---------------- 账号 / 平台 ----------------
@@ -301,10 +499,129 @@ def ai_status():
     return {"ready": hub.ai_ready()}
 
 
+@app.get("/ai/gate")
+def ai_gate():
+    """AIGC 合规门禁状态：开关、审查模型、高危词数、最近拒绝。"""
+    from core import gate as g
+    snap = {"enabled": g.is_enabled(),
+            "review_model": g._cfg("REVIEW_MODEL", "").strip() or "(未配置，走本地 heuristic)",
+            "dangerous_terms": len(g.DANGEROUS_PATTERNS),
+            "human_review_gate": "AI 源内容禁止直接 publish，须 draft_only + 人工确认"}
+    # 最近 10 条被门禁拒绝的发布（jobs 里 failed 且 message 含 门禁/高危/人工）
+    try:
+        rows = hub.conn.execute(
+            "SELECT * FROM jobs WHERE type='publish' AND status='failed' "
+            "ORDER BY id DESC LIMIT 50").fetchall()
+        denied = [dict(r) for r in rows if any(
+            k in (r["message"] or "") for k in ("门禁", "高危", "人工确认", "合规"))]
+        snap["recent_denied"] = denied[:10]
+    except Exception:
+        snap["recent_denied"] = []
+    return snap
+
+
 @app.get("/jobs")
 def jobs(limit: int = 50):
     from core import db
     return [dict(r) for r in db.list_jobs(hub.conn, limit)]
+
+
+# ---------------- 可观测性端点 ----------------
+
+@app.get("/metrics")
+def metrics():
+    """实时指标快照：计数器 + 耗时直方图 + 事件计数。
+
+    重启归零；长期趋势看 jobs 表 + events.log（grep trace_id 串联链路）。
+    """
+    snap = obs.METRICS.snapshot()
+    snap["events_log"] = str(obs.EVENT_LOG)
+    snap["trace_hint"] = "发布/更新链路 grep 'trace' + trace_id 于 events.log"
+    return snap
+
+
+@app.get("/health")
+def health():
+    """存活探测：DB 可读 + 事件日志可写 + AI 是否就绪。供反代/监控探活。"""
+    from core import db
+    db_ok = False
+    try:
+        db_ok = hub.conn.execute("SELECT 1").fetchone()[0] == 1
+    except Exception:
+        pass
+    log_ok = Path(obs.EVENT_LOG.parent).exists()
+    return {"ok": db_ok and log_ok, "db": db_ok, "events_log": log_ok,
+            "ai_ready": hub.ai_ready(), "ts": time.time()}
+
+
+# ---------------- 工作流运行（LangGraph 引擎，ADR-001/003） ----------------
+# 绞杀者增量：以下端点为增量新增，legacy /publish 端点原样保留可随时回退。
+# config.json 设 "workflow": {"enabled": false} 可整体禁用新引擎。
+
+_RUNNER = None
+
+
+def _workflow_runner():
+    global _RUNNER
+    if _RUNNER is None:
+        from workflows.runner import WorkflowRunner
+        _RUNNER = WorkflowRunner(hub)
+    return _RUNNER
+
+
+def _workflow_enabled():
+    try:
+        cfg = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
+        return bool((cfg.get("workflow") or {}).get("enabled", True))
+    except Exception:
+        return True
+
+
+class WorkflowPublishIn(BaseModel):
+    platforms: List[str]
+    account: str = "default"
+    draft_only: bool = False
+    dry_run: bool = False     # true=预演：不触真实平台，合成结果（冒烟/演练用）
+
+
+class ResumeIn(BaseModel):
+    approved: bool = True
+    note: str = ""
+
+
+@app.post("/articles/{aid}/publish/workflow")
+def publish_workflow(aid: int, body: WorkflowPublishIn):
+    """Agent 驱动的工作流发布：立即返回 run_id，轮询 GET /runs/{run_id}。
+    挂起（waiting_human）时 result.human_task 带人工处理载荷，POST /runs/{id}/resume 恢复。"""
+    if not _workflow_enabled():
+        raise HTTPException(409, "工作流引擎已通过 config workflow.enabled=false 禁用")
+    try:
+        return _workflow_runner().start(aid, body.platforms, body.account,
+                                        body.draft_only, body.dry_run)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.get("/runs")
+def runs_list(limit: int = 50):
+    return _workflow_runner().list(limit)
+
+
+@app.get("/runs/{run_id}")
+def runs_detail(run_id: str):
+    r = _workflow_runner().get(run_id)
+    if not r:
+        raise HTTPException(404, "run 不存在")
+    return r
+
+
+@app.post("/runs/{run_id}/resume")
+def runs_resume(run_id: str, body: ResumeIn):
+    """恢复挂起的 run：approved=true 表示人已在平台侧完成最后一步（如掘金点发布）。"""
+    try:
+        return _workflow_runner().resume(run_id, body.approved, body.note)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
 
 
 if __name__ == "__main__":

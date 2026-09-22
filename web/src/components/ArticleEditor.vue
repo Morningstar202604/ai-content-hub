@@ -4,17 +4,30 @@
       <span class="title">{{ article.id ? '#' + article.id : '新文章' }}</span>
       <el-tag v-if="dirty" size="small" type="warning" effect="dark" class="dirty-tag">未保存</el-tag>
       <span class="spacer" />
-      <el-radio-group v-model="view" size="small" class="view-switch">
-        <el-radio-button value="edit">编辑</el-radio-button>
-        <el-radio-button value="split">分屏</el-radio-button>
-        <el-radio-button value="preview">预览</el-radio-button>
-      </el-radio-group>
-      <el-button size="small" :icon="Aim" @click="$emit('ai-rewrite')">
-        <span class="btxt">AI 改写</span>
+
+      <!-- 视图切换（编辑/分屏/预览）+ AI 动作，全部收进一个「视图与 AI」下拉，避免平铺堆叠 -->
+      <el-dropdown trigger="click" @command="onMore">
+        <el-button size="small" :icon="Menu" class="more-btn">
+          <span class="btxt">视图与 AI</span>
+        </el-button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item divided command="edit" :icon="Edit"
+                               :class="{ 'is-active-cmd': view === 'edit' }">编辑</el-dropdown-item>
+            <el-dropdown-item command="split" :icon="Operation"
+                               :class="{ 'is-active-cmd': view === 'split' }">分屏</el-dropdown-item>
+            <el-dropdown-item command="preview" :icon="View"
+                               :class="{ 'is-active-cmd': view === 'preview' }">预览</el-dropdown-item>
+            <el-dropdown-item divided command="rewrite" :icon="Aim">AI 改写</el-dropdown-item>
+            <el-dropdown-item command="polish" :icon="Brush">AI 润色</el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
+
+      <el-button size="small" :icon="Promotion" :disabled="dirty" @click="$emit('publish')">
+        <span class="btxt">发布</span>
       </el-button>
-      <el-button size="small" :icon="Brush" @click="$emit('ai-polish')">
-        <span class="btxt">AI 润色</span>
-      </el-button>
+
       <el-button size="small" type="primary" :icon="Check" :loading="saving" @click="$emit('save')">
         <span class="btxt">保存</span>
       </el-button>
@@ -70,7 +83,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
-import { Check, PriceTag, Aim, Brush } from '@element-plus/icons-vue'
+import { Check, PriceTag, Aim, Brush, Menu, Edit, Operation, View, Promotion } from '@element-plus/icons-vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 
 const props = defineProps({
@@ -79,7 +92,7 @@ const props = defineProps({
   dirty: Boolean,
   saving: Boolean
 })
-const emit = defineEmits(['save', 'touch', 'ai-rewrite', 'ai-polish'])
+const emit = defineEmits(['save', 'touch', 'ai-rewrite', 'ai-polish', 'publish'])
 
 const { isMobile } = useBreakpoint()
 // 手机默认只看编辑，分屏两栏根本没法用；桌面默认分屏
@@ -93,6 +106,17 @@ const rendered = computed(() =>
 )
 const chars = computed(() => (props.article?.content_md || '').length)
 const touch = () => emit('touch')
+
+// 「视图与 AI」下拉：命令分发
+function onMore(cmd) {
+  switch (cmd) {
+    case 'edit': view.value = 'edit'; break
+    case 'split': view.value = 'split'; break
+    case 'preview': view.value = 'preview'; break
+    case 'rewrite': emit('ai-rewrite'); break
+    case 'polish': emit('ai-polish'); break
+  }
+}
 </script>
 
 <style scoped lang="scss">
