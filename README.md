@@ -580,6 +580,17 @@ ai-content-hub/
   请遵守各平台的 AI 内容规范，`ai_write` 产物入库时已带 `source=ai` 标记供你区分；
 - 请勿将本工具用于批量灌水、刷量等违反平台规则的行为，账号风险自负。
 
+## 仓库地址
+
+四平台并列同步（同分支、同标签、同 HEAD），不分主次，任意选用：
+
+| 平台 | 地址 |
+|---|---|
+| GitHub | <https://github.com/x33834/ai-content-hub> |
+| GitHub | <https://github.com/Morningstar202604/ai-content-hub> |
+| GitCode | <https://gitcode.com/badhope/ai-content-hub> |
+| Gitee | <https://gitee.com/badhope/ai-content-hub> |
+
 ## 许可证
 
 [MIT](LICENSE) © 2026 badhope
