@@ -134,7 +134,7 @@ class PlatformAdapter:
         return data
 
     def api_put(self, page, url, payload, headers=None):
-        """PUT JSON。简书更新文章用。"""
+        """PUT JSON。更新文章用。"""
         js = """async ([u, body, hdrs]) => {
             const r = await fetch(u, {
                 method: 'PUT',

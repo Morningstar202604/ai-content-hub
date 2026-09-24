@@ -95,7 +95,7 @@ const props = defineProps({
 const hub = useHubStore()
 
 const PLAT_MARKS = {
-  zhihu: '知', bilibili: 'B', cnblogs: '博', csdn: 'C', jianshu: '简',
+  zhihu: '知', bilibili: 'B', cnblogs: '博', csdn: 'C', metaweblog: '站',
   juejin: '掘', oschina: '开', segmentfault: '思', toutiao: '头'
 }
 const mark = p => PLAT_MARKS[p.id] || p.name?.[0] || '?'

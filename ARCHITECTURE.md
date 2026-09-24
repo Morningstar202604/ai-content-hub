@@ -16,7 +16,7 @@
 AI 内容中台：**写作 → 合规 → 多平台发布 → 验证 → 人机协作收尾** 的一站式管线。
 
 - 用户：站长本人（写作/发布），AI Agent（REST/MCP 无人值守调用）
-- 平台适配：CSDN / 知乎 / 掘金 / 博客园 / 简书 / B站 / 头条 / 开源中国 / SegmentFault
+- 平台适配：CSDN / 知乎 / 掘金 / 博客园 / B站 / 头条 / 开源中国 / SegmentFault / 自建博客(WordPress/Typecho)
 - 技术栈：Python 3.13 + FastAPI + SQLite + Playwright（反检测浏览器）+ Vue3/Element Plus
 
 ## 2. 现状架构基线（as-is，2026-09-21）

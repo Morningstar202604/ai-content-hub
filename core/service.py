@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # 导入即注册
 from core.adapters import (  # noqa: F401
-    bilibili, cnblogs, csdn, jianshu, juejin, oschina, segmentfault, toutiao, zhihu,
+    bilibili, cnblogs, csdn, juejin, metaweblog, oschina, segmentfault, toutiao, zhihu,
 )
 
 
@@ -608,7 +608,7 @@ class Hub:
             _demo_hosts = {
                 "zhihu": "zhuanlan.zhihu.com/p/", "bilibili": "www.bilibili.com/read/cv",
                 "cnblogs": "www.cnblogs.com/demo/p/", "csdn": "blog.csdn.net/demo/article/details/",
-                "jianshu": "www.jianshu.com/p/", "juejin": "juejin.cn/post/",
+                "juejin": "juejin.cn/post/",
                 "oschina": "my.oschina.net/demo/blog/", "segmentfault": "segmentfault.com/a/",
                 "toutiao": "www.toutiao.com/article/",
             }

@@ -25,13 +25,18 @@
       "username": "你的登录用户名",
       "token": "MetaWeblog 访问令牌（不是登录密码，登录密码无效）"
     },
+    "metaweblog": {
+      "_说明": "自建博客通用接入（WordPress/Typecho 等 MetaWeblog 标准协议），纯 API 免扫码。WordPress 用「应用程序密码」，Typecho 用登录密码",
+      "endpoint": "https://你的博客域名/xmlrpc.php",
+      "username": "你的登录用户名",
+      "password": "应用密码或登录密码"
+    },
 
     "_浏览器类平台_说明": "以下 8 个平台均走 Playwright 浏览器登录态，登录一次即可（扫码/账密），登录态自动保存到 data/profiles/ 目录，config.json 里不需要填任何字段。用法：python cli.py --headed login --platform <平台名>",
     "_浏览器类平台_列表": {
       "juejin": "python cli.py --headed login --platform juejin   # 掘金（扫码或手机号短信）",
       "csdn":   "python cli.py --headed login --platform csdn     # CSDN（账密或微信扫码）",
       "zhihu":  "python cli.py --headed login --platform zhihu    # 知乎（扫码，发布后自动抓文章ID）",
-      "jianshu": "python cli.py --headed login --platform jianshu # 简书（cookie 即可，最稳）",
       "segmentfault": "python cli.py --headed login --platform segmentfault  # 思否（账密）",
       "bilibili": "python cli.py --headed login --platform bilibili   # B站（扫码，仅草稿，发表需到编辑页二次选分区）",
       "toutiao":  "python cli.py --headed login --platform toutiao    # 头条号（扫码，标题限30字）",
@@ -39,8 +44,8 @@
     },
 
     "_平台能力矩阵": {
-      "发布":  "juejin / csdn / cnblogs / zhihu / jianshu / segmentfault / bilibili(草稿) / toutiao / oschina",
-      "原地更新": "juejin / csdn / cnblogs / jianshu",
+      "发布":  "juejin / csdn / cnblogs / zhihu / segmentfault / bilibili(草稿) / toutiao / oschina / metaweblog(自建站)",
+      "原地更新": "juejin / csdn / cnblogs / metaweblog",
       "抓取入库": "juejin / csdn / cnblogs / zhihu"
     }
   }

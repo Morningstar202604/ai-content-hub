@@ -7,7 +7,8 @@
 | 类型 | 平台 | 连接方式 | 登录态有效期 |
 |------|------|----------|-------------|
 | 纯协议 | **cnblogs** | 读 `config.json` 的 endpoint/username/token，XML-RPC 直连 | 永不过期 |
-| 浏览器 | csdn / juejin / zhihu / jianshu / segmentfault / bilibili / toutiao / oschina | `python cli.py login --platform <名>` 扫码一次，Playwright 登录态存本地 profile | 长期（数周~数月，视平台） |
+| 浏览器 | csdn / juejin / zhihu / segmentfault / bilibili / toutiao / oschina |
+| 纯协议 | cnblogs / metaweblog | 配置一次，免扫码 | `python cli.py login --platform <名>` 扫码一次，Playwright 登录态存本地 profile | 长期（数周~数月，视平台） |
 
 统一发布入口：`python cli.py publish --id <文章ID> --platforms <逗号分隔>`。
 
@@ -76,7 +77,6 @@ python cli.py login --platform juejin --headed
 | csdn | 扫码 | 验证码策略：L1 反检测 → L2 持久化 → L3 半自动 |
 | juejin | 扫码 | `API_FIRST` 标注有 OpenAPI，但默认走浏览器 |
 | zhihu | 扫码 | 编辑器 UI 注入，发布后 URL 带 `/p/<id>` |
-| jianshu | 扫码 | 作者 API（cookie 即可），比 UI 稳 |
 | segmentfault | 扫码 | 草稿 API + 写作页点发布 |
 | bilibili | 扫码 | 草稿 API（FormData + csrf），正式发布需选分区 |
 | toutiao | 扫码 | 编辑器 UI 注入，发布后 URL 在 `article` 路径 |

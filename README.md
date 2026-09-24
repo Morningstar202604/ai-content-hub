@@ -22,7 +22,7 @@
 
 ## 30 秒看懂它能干什么
 
-- **多平台一键分发**：一篇文章，勾选平台，同时发到 **9 个平台**（掘金 / CSDN / 博客园 / 知乎 / 简书 / 思否 / B站专栏 / 头条号 / 开源中国）。
+- **多平台一键分发**：一篇文章，勾选平台，同时发到 **9 个平台**（掘金 / CSDN / 博客园 / 知乎 / 思否 / B站专栏 / 头条号 / 开源中国 / 自建博客）。
 - **原地更新，不是重发**：改了文章，它去打开各平台的**编辑页**改原文，URL 不变、评论点赞都在。
 - **AI 全权接管**：内置 MCP Server + REST API，Claude 或任何脚本都能直接建文章、发布、抓取账号里的文章。
 - **完全自托管**：文章库、登录态、浏览器 profile 全在你自己的机器上，不依赖任何第三方 SaaS。
@@ -52,8 +52,8 @@ python cli.py serve
 | 掘金 | 浏览器 + 页面 API | ✅ | ✅ | ✅ | |
 | CSDN | 浏览器 | ✅ | ✅ | ✅ | |
 | 博客园 | MetaWeblog 协议 | ✅ | ✅ | ✅ | **免浏览器、零验证码** |
+| 自建博客 | MetaWeblog 账密 | ✅ | ✅ | ✅ | WordPress/Typecho，免扫码 |
 | 知乎 | 浏览器 UI 注入 | ✅ | ✅ | — | 扫码登录；发布后自动抓文章 ID |
-| 简书 | 作者后台 API | ✅ | ✅ | ✅ | cookie 即可，最稳 |
 | 思否 SegmentFault | API 建稿 + UI 发布 | ✅ | ✅ | — | |
 | B站专栏 | 创作 API（FormData） | ✅ 草稿 | ✅ 草稿 | — | 发表需到编辑页二次选分区 |
 | 头条号 | 浏览器 UI 注入 | ✅ | — | — | 标题限 30 字 |
@@ -101,7 +101,7 @@ python cli.py serve
               │
      内置 Chromium（每平台一个持久化 profile）
               │
-     适配器：掘金 / CSDN / 知乎 / 简书 / 思否 / B站 / 头条 / 开源中国 /（你的下一个平台）
+     适配器：掘金 / CSDN / 知乎 / 思否 / B站 / 头条 / 开源中国 / 自建博客(WordPress/Typecho)
               │
      发布    列表    原地更新
 ```
@@ -284,7 +284,6 @@ python cli.py serve        # http://127.0.0.1:8800/docs
 |---|---|---|
 | 博客园 | MetaWeblog XML-RPC + 访问令牌 | **零验证码** |
 | 掘金 | 有内容 OpenAPI（需申请） | 走 API 则零 |
-| 简书 | 作者后台 API（cookie 即可，本项目已用） | 仅登录时 |
 | B站专栏 | 创作 API（本项目已用，cookie+csrf） | 仅登录时 |
 | 思否 | 草稿 API（本项目已用） | 仅登录时 |
 | CSDN / 知乎 / 头条 / 开源中国 | 无公开发布 API，只能浏览器 | 走 L2/L3 |
@@ -539,7 +538,6 @@ ai-content-hub/
 │     ├─ csdn.py           CSDN（浏览器）
 │     ├─ cnblogs.py        博客园（免浏览器，MetaWeblog）
 │     ├─ zhihu.py          知乎专栏（Draft.js 编辑器注入）
-│     ├─ jianshu.py        简书（REST API）
 │     ├─ segmentfault.py   思否（草稿 API + token 头）
 │     ├─ bilibili.py       B站专栏（FormData + bili_jct）
 │     ├─ toutiao.py        头条号（contenteditable 注入）
