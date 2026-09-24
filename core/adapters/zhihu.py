@@ -49,6 +49,10 @@ class ZhihuAdapter(PlatformAdapter):
     id = "zhihu"
     name = "知乎"
     login_url = "https://www.zhihu.com/signin?next=%2F"
+
+    # 页面结构版本（第三刀加固）：平台改版时更新此版本并同步 key_selectors
+    selector_version = "2026-09"
+    key_selectors = {'editor': '.DraftEditor-root', 'title_input': "textarea, input[placeholder*='标题']"}
     home_url = "https://zhuanlan.zhihu.com/write"
     list_url = "https://www.zhihu.com/creator"   # 创作中心（内容管理在里面）
     new_url = "https://zhuanlan.zhihu.com/write"
@@ -70,9 +74,6 @@ class ZhihuAdapter(PlatformAdapter):
 
     # ---------------- 列表 ----------------
 
-    def list_articles(self, page, limit=50):
-        raise PlatformError("知乎已发文章列表暂未适配（编辑器发布可用）。"
-                            "如有需要，跑一次 dump_dom 抓创作中心结构后补充")
 
     # ---------------- 正文注入 ----------------
 

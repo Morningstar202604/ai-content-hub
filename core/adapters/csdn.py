@@ -30,6 +30,10 @@ class CSDNAdapter(PlatformAdapter):
     id = "csdn"
     name = "CSDN"
     login_url = "https://passport.csdn.net/login"
+
+    # 页面结构版本（第三刀加固）：平台改版时更新此版本并同步 key_selectors
+    selector_version = "2026-09"
+    key_selectors = {'editor': '.editor, .CodeMirror', 'title_input': "input[placeholder*='标题']"}
     home_url = "https://mp.csdn.net/mp_blog/manage/article"
     list_url = "https://mp.csdn.net/mp_blog/manage/article"
     new_url = "https://editor.csdn.net/md/"

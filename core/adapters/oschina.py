@@ -24,6 +24,10 @@ class OschinaAdapter(PlatformAdapter):
     id = "oschina"
     name = "开源中国"
     login_url = "https://www.oschina.net/home/login"
+
+    # 页面结构版本（第三刀加固）：平台改版时更新此版本并同步 key_selectors
+    selector_version = "2026-09"
+    key_selectors = {'editor': '.CodeMirror, .bytemd', 'title_input': "input[placeholder*='标题']"}
     home_url = HOME
     list_url = "https://my.oschina.net/blog"
     new_url = "https://my.oschina.net/blog/write"
@@ -47,9 +51,6 @@ class OschinaAdapter(PlatformAdapter):
 
     # ---------------- 列表 ----------------
 
-    def list_articles(self, page, limit=50):
-        raise PlatformError("开源中国文章列表暂未适配（发布可用），"
-                            "已发文章见 my.oschina.net 个人博客页")
 
     # ---------------- 发布 ----------------
 

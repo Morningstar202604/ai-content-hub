@@ -25,6 +25,10 @@ class ToutiaoAdapter(PlatformAdapter):
     id = "toutiao"
     name = "头条号"
     login_url = "https://sso.toutiao.com/login?service=https%3A%2F%2Fmp.toutiao.com%2F"
+
+    # 页面结构版本（第三刀加固）：平台改版时更新此版本并同步 key_selectors
+    selector_version = "2026-09"
+    key_selectors = {'editor': '.ProseMirror, .syl-editor', 'title_input': "input[placeholder*='标题']"}
     home_url = "https://mp.toutiao.com/profile_v4/graphic/publish"
     list_url = "https://mp.toutiao.com/profile_v4/graphic/articles"
     new_url = "https://mp.toutiao.com/profile_v4/graphic/publish"
@@ -55,9 +59,6 @@ class ToutiaoAdapter(PlatformAdapter):
 
     # ---------------- 列表 ----------------
 
-    def list_articles(self, page, limit=50):
-        raise PlatformError("头条号已发内容列表暂未适配（发布可用），"
-                            "已发文章见 mp.toutiao.com 内容管理页")
 
     # ---------------- 发布 ----------------
 

@@ -55,6 +55,10 @@ class JuejinAdapter(PlatformAdapter):
     id = "juejin"
     name = "稀土掘金"
     login_url = "https://juejin.cn/login"
+
+    # 页面结构版本（第三刀加固）：平台改版时更新此版本并同步 key_selectors
+    selector_version = "2026-09"
+    key_selectors = {'editor': '.bytemd, .CodeMirror', 'title_input': "input[placeholder*='标题'], .title-input"}
     home_url = "https://juejin.cn/creator/home"
     list_url = "https://juejin.cn/creator/content/article"
     new_url = "https://juejin.cn/editor/drafts/new"

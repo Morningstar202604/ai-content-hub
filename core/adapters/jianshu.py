@@ -37,6 +37,10 @@ class JianshuAdapter(PlatformAdapter):
     id = "jianshu"
     name = "简书"
     login_url = "https://www.jianshu.com/sign_in"
+
+    # 页面结构版本（第三刀加固）：平台改版时更新此版本并同步 key_selectors
+    selector_version = "2026-09"
+    key_selectors = {'editor': '.CodeMirror, .ace_editor', 'title_input': 'textarea'}
     home_url = "https://www.jianshu.com/"
     list_url = "https://www.jianshu.com/writer"
     new_url = "https://www.jianshu.com/writer#/notes/new"

@@ -17,6 +17,10 @@ class SegmentFaultAdapter(PlatformAdapter):
     id = "segmentfault"
     name = "思否"
     login_url = "https://segmentfault.com/user/login"
+
+    # 页面结构版本（第三刀加固）：平台改版时更新此版本并同步 key_selectors
+    selector_version = "2026-09"
+    key_selectors = {'editor': '.CodeMirror, .ProseMirror', 'title_input': "input[placeholder*='标题']"}
     home_url = "https://segmentfault.com/write"
     list_url = "https://segmentfault.com/user/articles"
     new_url = "https://segmentfault.com/write"
@@ -40,9 +44,6 @@ class SegmentFaultAdapter(PlatformAdapter):
 
     # ---------------- 列表 ----------------
 
-    def list_articles(self, page, limit=50):
-        raise PlatformError("思否已发文章列表暂未适配。"
-                            "草稿可以打开 segmentfault.com/write?draftId=xxx 直接编辑")
 
     # ---------------- 发布 ----------------
 

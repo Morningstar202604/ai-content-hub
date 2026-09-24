@@ -80,6 +80,10 @@ class CnblogsAdapter(PlatformAdapter):
     name = "博客园"
     needs_browser = False          # 纯协议，不开浏览器
     login_url = "https://account.cnblogs.com/signin"
+
+    # 页面结构版本（第三刀加固）：平台改版时更新此版本并同步 key_selectors
+    selector_version = "2026-09"
+    key_selectors = {'editor': '.CodeMirror', 'title_input': "input[name='Title'], #post_title"}
     home_url = "https://i.cnblogs.com/posts"
     list_url = "https://i.cnblogs.com/posts"
     new_url = "https://i.cnblogs.com/posts/edit"

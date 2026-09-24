@@ -17,6 +17,10 @@ class BilibiliAdapter(PlatformAdapter):
     id = "bilibili"
     name = "B站专栏"
     login_url = "https://passport.bilibili.com/login"
+
+    # 页面结构版本（第三刀加固）：平台改版时更新此版本并同步 key_selectors
+    selector_version = "2026-09"
+    key_selectors = {'editor': '.ProseMirror, .ql-editor', 'title_input': "input[placeholder*='标题']"}
     home_url = "https://member.bilibili.com/platform/upload-manager/article"
     list_url = "https://member.bilibili.com/platform/upload-manager/article"
     new_url = "https://member.bilibili.com/platform/upload-manager/article/editor"
@@ -32,9 +36,6 @@ class BilibiliAdapter(PlatformAdapter):
 
     # ---------------- 列表 ----------------
 
-    def list_articles(self, page, limit=50):
-        raise PlatformError("B站专栏列表暂未适配（发布/草稿可用），"
-                            "草稿箱见 member.bilibili.com 平台上传管理页")
 
     # ---------------- 发布 ----------------
 

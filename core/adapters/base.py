@@ -61,14 +61,34 @@ class PlatformAdapter:
     list_url = ""      # 内容管理页
     new_url = ""       # 新建文章页
 
+    # 选择器版本化（第三刀）：每个子类声明它依赖的页面结构版本与关键选择器，
+    # 平台改版时 dump-dom 能立刻对上号，而不是报一堆无关错误。
+    selector_version = ""    # 例如 "2026-09"（适配/验证时手动更新）
+    key_selectors = {}       # 例如 {"editor": ".CodeMirror", "publish_btn": "button:has-text('发布')"}
+
+    def sel_fail(self, sel_name):
+        """选择器失效的统一报错：带上版本号与 DOM dump 指引，方便一键补适配。"""
+        return PlatformError(
+            f"[{self.name}] 页面结构失效：关键选择器 '{sel_name}' 未命中"
+            f"（适配器版本 {self.selector_version or '未知'}）。"
+            f"请先跑一次 dump-dom 采集当前页面结构，更新 core/adapters/{self.id}.py 的 key_selectors。")
+
     # ---------------- 子类必须实现的四个动作 ----------------
 
     def check_auth(self, page) -> bool:
         raise NotImplementedError
 
     def list_articles(self, page, limit=50):
-        """返回 [{'post_id','title','url','edit_url','status','stats':{}}]"""
-        raise NotImplementedError
+        """返回 [{'post_id','title','url','edit_url','status','stats':{}}]
+
+        未实现的平台统一抛"需实机采集"错误（含 dump-dom 指引），
+        而不是静默返回空列表——空列表会让"同步/更新"静默失效。
+        """
+        raise PlatformError(
+            f"[{self.name}] 已发文章列表暂未适配。"
+            f"该平台内容管理页 {self.list_url or '未知'} 需要实机登录后 "
+            f"用 dump-dom 采集结构，再在 core/adapters/{self.id}.py 补 list_articles；"
+            f"或改用该平台官方 API 对接。发布/草稿能力不受影响。")
 
     def publish(self, page, article: dict, options: dict = None):
         """返回 {'post_id','post_url','edit_url','draft_only'}"""
