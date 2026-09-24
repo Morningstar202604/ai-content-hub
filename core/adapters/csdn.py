@@ -245,7 +245,7 @@ class CSDNAdapter(PlatformAdapter):
         }""", summary)
         _time.sleep(1)
 
-        # 标签（文章标签面板，选完不关面板）
+        # 标签（文章标签面板，选完不关面板）：优先文章第一个标签，没有就选推荐
         tag_name = options.get("tag_category") or ""
         self._select_tag(page, tag_name)
         _time.sleep(1)

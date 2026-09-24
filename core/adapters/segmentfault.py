@@ -55,7 +55,8 @@ class SegmentFaultAdapter(PlatformAdapter):
 
         res = self.api_post(
             page, f"{HOST}/gateway/draft",
-            {"title": article["title"], "tags": [], "text": article.get("content_md", ""),
+            {"title": article["title"], "tags": options.get("tags") or [],
+             "text": article.get("content_md", ""),
              "object_id": "", "type": "article", "language": "", "cover": ""},
             headers={"token": token})
         draft_id = res.get("id") if isinstance(res, dict) else None
@@ -98,9 +99,11 @@ class SegmentFaultAdapter(PlatformAdapter):
         if not draft_id:
             raise PlatformError("思否原地更新需要 post_id")
         token = self.get_cookie(page, "PHPSESSID")
+        tags = [t.strip() for t in (article.get("tags") or "").split(",") if t.strip()]
         self.api_post(
             page, f"{HOST}/gateway/draft",
-            {"title": article["title"], "tags": [], "text": article.get("content_md", ""),
+            {"title": article["title"], "tags": tags,
+             "text": article.get("content_md", ""),
              "object_id": draft_id, "type": "article", "language": "", "cover": ""},
             headers={"token": token})
         time.sleep(1)

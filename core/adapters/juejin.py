@@ -24,6 +24,60 @@ CATEGORIES = {
 }
 DEFAULT_CATEGORY = "后端"
 
+# 常用标签 ID 兜底表：搜索不到时按名字直接命中（掘金 tag_api 常见值）
+KNOWN_TAG_IDS = {
+    "Python": "7104", "JavaScript": "7003", "前端": "7003",
+    "Java": "7002", "后端": "7104", "Go": "7097",
+    "Android": "7095", "iOS": "7093", "人工智能": "7034",
+    "机器学习": "7034", "开发工具": "7015", "程序员": "7005",
+    "面试": "7039", "架构": "7103", "数据库": "7030",
+}
+
+
+def _resolve_tag_ids(page, tag_names):
+    """把文章标签解析成掘金 tag_id 列表（优先精确搜索，兜底常用表，再兜底 Python）。
+
+    掘金 tag_api/v1/query_tag_list 按关键词搜；搜不到的名字直接跳过，
+    至少保证一个 tag_id，发布弹窗里才有标签可显示。
+    """
+    ids = []
+    for name in (tag_names or [])[:5]:
+        name = name.strip()
+        if not name:
+            continue
+        if name in KNOWN_TAG_IDS and KNOWN_TAG_IDS[name] not in ids:
+            ids.append(KNOWN_TAG_IDS[name])
+            continue
+        try:
+            data = api_tag_search(page, name)
+            hit = None
+            for t in (data.get("data") or [])[:10]:
+                if (t.get("tag_name") or "").lower() == name.lower():
+                    hit = t
+                    break
+            if hit is None and (data.get("data") or []):
+                hit = data["data"][0]
+            if hit and str(hit.get("tag_id", "")) not in ids:
+                ids.append(str(hit["tag_id"]))
+        except Exception:
+            continue
+    if not ids:
+        ids = [KNOWN_TAG_IDS["Python"]]
+    return ids
+
+
+def api_tag_search(page, keyword):
+    """掘金标签搜索接口（页面上下文 fetch，cookie 自动带）。"""
+    return page.evaluate("""async ([kw]) => {
+        const r = await fetch('https://api.juejin.cn/tag_api/v1/query_tag_list'
+            + '?aid=2608&spider=0', {
+            method: 'POST', credentials: 'include',
+            headers: {'content-type': 'application/json'},
+            body: JSON.stringify({key_word: kw, cursor: '0', limit: 10})
+        });
+        return {status: r.status, text: await r.text()};
+    }""", [keyword])
+
 
 def _click_text(page, texts, timeout=8000):
     for t in texts:
@@ -148,8 +202,9 @@ class JuejinAdapter(PlatformAdapter):
             page.goto(self.home_url, timeout=60000, wait_until="domcontentloaded")
             time.sleep(2)
 
-        # 标签：至少带一个 Python / 后端 常用标签（掘金 7104 = Python）
-        tag_ids = options.get("tag_ids") or ["7104"]
+        # 标签：把文章标签解析成掘金 tag_id（找不到时兜底 Python 7104）
+        tag_ids = options.get("tag_ids") or _resolve_tag_ids(
+            page, options.get("tags") or [])
 
         payload = {
             "category_id": cat_id,

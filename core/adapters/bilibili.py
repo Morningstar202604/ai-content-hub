@@ -52,7 +52,8 @@ class BilibiliAdapter(PlatformAdapter):
         fields = {
             "title": title, "content": html, "summary": summary, "banner_url": "",
             "words": len(html), "category": "0", "list_id": "0", "tid": "0",
-            "reprint": "0", "tags": "", "image_urls": "", "origin_image_urls": "",
+            "reprint": "0", "tags": ",".join(options.get("tags") or []),
+            "image_urls": "", "origin_image_urls": "",
             "dynamic_intro": summary[:60], "media_id": "0", "spoiler": "0",
             "original": "1", "top_video_bvid": "", "csrf": csrf,
         }

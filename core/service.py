@@ -638,7 +638,16 @@ class Hub:
         job = db.add_job(self.conn, "publish", article_id, platform)
         try:
             def _do(ad, page):
-                return ad.publish(page, article, {"draft_only": draft_only})
+                # 平台特有字段从 options 下发（标签/分类/摘要等），
+                # 各适配器自行决定用哪些、忽略哪些
+                tag_list = [t.strip() for t in (article.get("tags") or "").split(",")
+                            if t.strip()]
+                return ad.publish(page, article, {
+                    "draft_only": draft_only,
+                    "tags": tag_list,                 # 文章标签（所有平台可用）
+                    "tag_category": tag_list[0] if tag_list else "",
+                    "summary": article.get("summary") or "",
+                })
             r = self._with_adapter(platform, account, _do, page_hook=page_hook)
             # 体检 B1 修复（QA 标质力 2026-09-21）：适配器返回 error 键时
             # 必须走失败分支，否则"发布未完成"会被静默记成"发布成功"
