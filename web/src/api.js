@@ -50,9 +50,9 @@ export const api = {
   search: (kw) => http.get(`/articles/search/${kw}`),
 
   // ---------------- 发布 / 更新 / 同步（统一任务语义） ----------------
-  publish: (id, platforms, draftOnly = false, account = 'default') =>
+  publish: (id, platforms, draftOnly = false, account = 'default', settings = {}) =>
     http.post(`/articles/${id}/publish`,
-              { platforms, draft_only: draftOnly, account }),
+              { platforms, draft_only: draftOnly, account, settings }),
   update: (id, platforms, account = 'default') =>
     http.post(`/articles/${id}/update`, { platforms, account }),
   syncPending: (account = 'default') =>

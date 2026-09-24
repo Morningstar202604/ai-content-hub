@@ -231,13 +231,13 @@ export const useHubStore = defineStore('hub', {
 
     // 发布 = 勾平台 → 点发布 → 轮询任务。发布前自动保存（人的预期：
     // 我点的发布内容必须是我刚写的最新版，不需要"先保存再发布"）
-    async publish(platforms, draftOnly) {
+    async publish(platforms, draftOnly, settings = {}) {
       if (!platforms.length) { ElMessage.warning('先选要发到哪些平台'); return null }
       if (!this.currentId) await this.save()
       if (!this.currentId) return null
       this.publishing = true
       try {
-        const t = await api.publish(this.currentId, platforms, draftOnly)
+        const t = await api.publish(this.currentId, platforms, draftOnly, 'default', settings)
         const done = await this.waitTask(t.task_id, 600000)
         await this.loadTasks()
         const res = done.result || {}

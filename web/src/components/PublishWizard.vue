@@ -22,7 +22,7 @@
         <div
           v-for="p in platforms" :key="p.id"
           class="plat-card"
-          :class="{ on: selected.includes(p.id) }"
+          :class="{ on: selected.includes(p.id), cfg: cfgOpen === p.id }"
           @click="toggle(p.id)"
         >
           <div class="plat-top">
@@ -32,17 +32,38 @@
               <div class="s">{{ p.needs_browser ? '浏览器' : '免登 API' }}</div>
             </div>
           </div>
-          <el-button
-            class="login-btn" size="small" text type="primary"
-            :loading="hub.loginTasks[p.id]?.status === 'running'"
-            @click.stop="hub.startLogin(p.id)"
-          >{{ hub.loginTasks[p.id]?.status === 'running' ? '等待扫码…' : '登录' }}</el-button>
+          <div class="plat-ops">
+            <el-button
+              class="login-btn" size="small" text type="primary"
+              :loading="hub.loginTasks[p.id]?.status === 'running'"
+              @click.stop="hub.startLogin(p.id)"
+            >{{ hub.loginTasks[p.id]?.status === 'running' ? '等待扫码…' : '登录' }}</el-button>
+            <el-button class="cfg-btn" size="small" text @click.stop="toggleCfg(p.id)">
+              {{ cfgOpen === p.id ? '收起' : '设置' }}
+            </el-button>
+          </div>
+
+          <!-- 平台特有字段：分类/标签，发布前可调 -->
+          <div v-if="cfgOpen === p.id" class="plat-cfg" @click.stop>
+            <el-select
+              v-if="CAT_OPTIONS[p.id]"
+              v-model="platformSettings[p.id].category"
+              size="small" filterable allow-create
+              :placeholder="'分类（默认 ' + (CAT_OPTIONS[p.id][0]) + '）'"
+            >
+              <el-option v-for="c in CAT_OPTIONS[p.id]" :key="c" :label="c" :value="c" />
+            </el-select>
+            <el-input
+              v-model="platformSettings[p.id].tags"
+              size="small" placeholder="标签（逗号分隔），留空用文章标签"
+            />
+          </div>
         </div>
       </div>
       <div class="pub-tools">
         <el-button size="small" text @click="selected = platforms.map(p => p.id)">全选</el-button>
         <el-button size="small" text @click="selected = []">清空</el-button>
-        <span class="pub-hint">灰色的平台先点「登录」扫码一次，之后自动复用</span>
+        <span class="pub-hint">点「设置」可调每个平台的分类/标签；灰色的平台先点「登录」扫码一次</span>
       </div>
       <el-checkbox v-model="draftOnly">只发草稿（先不公开，回头在平台上手动发布）</el-checkbox>
     </div>
@@ -100,14 +121,34 @@ const PLAT_MARKS = {
 }
 const mark = p => PLAT_MARKS[p.id] || p.name?.[0] || '?'
 
+// 平台可选分类（发布面板「设置」里可选；空=平台默认分类）
+const CAT_OPTIONS = {
+  juejin: ['后端', '前端', 'android', 'ios', '人工智能', '开发工具', '代码人生', '阅读'],
+  csdn: ['后端与架构设计', '前端开发', '移动开发', '人工智能', '网络安全', '云计算', '大数据', '物联网', '数据库', '运维', '程序人生', '其他'],
+}
+
 const selected = ref([])
 const draftOnly = ref(false)
 const running = ref(false)
 const done = ref(false)
 const results = ref([])
+// 平台特有字段：{ platformId: { category, tags } }
+const platformSettings = ref({})
+const cfgOpen = ref(null)
 const progressPct = computed(() => results.value.length
   ? Math.min(95, Math.round(results.value.length / selected.value.length * 100))
   : running.value ? 15 : 0)
+
+function ensureCfg(id) {
+  if (!platformSettings.value[id]) {
+    platformSettings.value[id] = { category: '', tags: '' }
+  }
+}
+function toggleCfg(id) {
+  if (cfgOpen.value === id) { cfgOpen.value = null; return }
+  cfgOpen.value = id
+  ensureCfg(id)
+}
 
 function toggle(id) {
   const i = selected.value.indexOf(id)
@@ -119,7 +160,7 @@ async function run() {
   done.value = false
   results.value = []
   try {
-    const t = await hub.publish(selected.value.slice(), draftOnly.value)
+    const t = await hub.publish(selected.value.slice(), draftOnly.value, platformSettings.value)
     if (!t) return
     const res = t.result || {}
     results.value = Array.isArray(res) ? res : (res.results || [])
@@ -151,6 +192,8 @@ function reset() {
   done.value = false
   results.value = []
   selected.value = []
+  platformSettings.value = {}
+  cfgOpen.value = null
   emit('update:modelValue', false)
 }
 
@@ -181,6 +224,7 @@ function goManage() {
   cursor: pointer; transition: border-color .15s, background .15s;
   &:hover { border-color: var(--line-strong); }
   &.on { border-color: var(--accent-hi); background: rgba(232, 190, 108, .06); }
+  &.cfg { border-color: var(--accent-hi); }
   .plat-top { display: flex; align-items: center; gap: 9px; }
   .plat-badge {
     width: 30px; height: 30px; border-radius: 8px; background: var(--line-soft);
@@ -189,7 +233,14 @@ function goManage() {
   }
   .nn .n { font-size: var(--fs-sm); color: var(--tx-1); }
   .nn .s { font-size: 10px; color: var(--tx-3); }
-  .login-btn { padding: 2px 0; height: auto; margin-top: 4px; }
+  .plat-ops { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+  .login-btn { padding: 2px 0; height: auto; }
+  .cfg-btn { padding: 2px 4px; height: auto; color: var(--tx-3); }
+  .plat-cfg {
+    margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line-strong);
+    display: flex; flex-direction: column; gap: 6px;
+    .el-select, .el-input { width: 100%; }
+  }
 }
 .pub-tools { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
 .pub-hint { font-size: 11px; color: var(--tx-3); margin-left: auto; }

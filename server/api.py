@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from core.service import Hub
 from core import observability as obs
@@ -164,6 +164,7 @@ class PublishIn(BaseModel):
     account: str = "default"
     draft_only: bool = False
     live: bool = False      # true=附带实时预览页（异步端点专用）
+    settings: Optional[Dict[str, Dict]] = None  # 平台特有字段：{平台id: {category, tags}}
 
 
 class UpdateIn(BaseModel):
@@ -244,7 +245,8 @@ def import_md(body: ImportIn):
 def publish(aid: int, body: PublishIn):
     """异步发布：提交到统一任务引擎，立即返回 task_id，轮询 GET /tasks/{task_id}。"""
     task_id = hub.tasks.submit("publish", article_id=aid, platforms=body.platforms,
-                               account=body.account, draft_only=body.draft_only)
+                               account=body.account, draft_only=body.draft_only,
+                               settings=body.settings)
     return {"task_id": task_id, "status": "pending", "poll": f"/tasks/{task_id}"}
 
 

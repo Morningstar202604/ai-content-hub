@@ -158,7 +158,9 @@ class TaskManager:
         draft_only = bool(task.get("draft_only"))
 
         if kind == "publish":
-            return self.hub.publish(article_id, platforms, account, draft_only)
+            extra = json.loads(task.get("result") or "{}")
+            return self.hub.publish(article_id, platforms, account, draft_only,
+                                    settings=extra.get("settings"))
         if kind == "update":
             return self.hub.update(article_id, platforms, account)
         if kind == "sync":

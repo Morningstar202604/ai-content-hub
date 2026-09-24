@@ -595,7 +595,7 @@ class Hub:
         return ai_mod.is_ready()
 
     def publish_single(self, article_id, platform, article, account="default",
-                       draft_only=False, page_hook=None):
+                       draft_only=False, page_hook=None, settings=None):
         """发布到单个平台并完成落库（jobs/publications 记账）。
 
         演示模式：直接返回模拟成功（含平台域名下的模拟链接），
@@ -639,13 +639,19 @@ class Hub:
         try:
             def _do(ad, page):
                 # 平台特有字段从 options 下发（标签/分类/摘要等），
-                # 各适配器自行决定用哪些、忽略哪些
-                tag_list = [t.strip() for t in (article.get("tags") or "").split(",")
+                # 各适配器自行决定用哪些、忽略哪些。
+                # 发布面板里手动设置的（settings[platform]）优先于文章字段。
+                ps = (settings or {}).get(platform) or {}
+                art_tags = [t.strip() for t in (article.get("tags") or "").split(",")
                             if t.strip()]
+                set_tags = [t.strip() for t in (ps.get("tags") or "").split(",")
+                            if t.strip()]
+                tag_list = set_tags or art_tags
                 return ad.publish(page, article, {
                     "draft_only": draft_only,
-                    "tags": tag_list,                 # 文章标签（所有平台可用）
+                    "tags": tag_list,                 # 标签：面板设置 > 文章 tags
                     "tag_category": tag_list[0] if tag_list else "",
+                    "category": (ps.get("category") or "").strip() or None,
                     "summary": article.get("summary") or "",
                 })
             r = self._with_adapter(platform, account, _do, page_hook=page_hook)
@@ -688,7 +694,7 @@ class Hub:
             raise
 
     def publish(self, article_id, platforms, account="default", draft_only=False,
-                page_hook=None):
+                page_hook=None, settings=None):
         art = self.get(article_id)
         if not art:
             raise ValueError(f"文章 {article_id} 不存在")
@@ -716,7 +722,8 @@ class Hub:
                 _t0 = time.time()
                 try:
                     r = self.publish_single(article_id, pf, art, account=account,
-                                            draft_only=draft_only, page_hook=page_hook)
+                                            draft_only=draft_only, page_hook=page_hook,
+                                            settings=settings)
                 except Exception as e:
                     all_ok = False
                     results.append({"platform": pf, "ok": False, "error": str(e)})
