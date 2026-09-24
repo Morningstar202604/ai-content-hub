@@ -11,8 +11,18 @@ import threading
 import time
 from pathlib import Path
 
+import hashlib
+
 from core import db
+from core.tasks import TaskManager
 from core.adapters.base import PlatformError, get_adapter
+
+
+def _content_hash(article):
+    """内容指纹：update 前比对用。标题+正文+摘要任一变化都会触发更新。"""
+    return hashlib.sha256(
+        f"{article['title']}\n{article['content_md']}\n{article.get('summary') or ''}"
+        .encode("utf-8")).hexdigest()
 from core.browser import (BuiltinBrowser, ensure_login, CaptchaPolicy,
                           wait_human_captcha, browser_thread_run)
 from core.observability import TraceContext, METRICS, emit
@@ -34,6 +44,8 @@ class Hub:
     def __init__(self, headless=True):
         self.conn = db.connect()
         self.headless = headless
+        # 统一任务引擎：REST/MCP 的登录、发布、更新、同步全部走它（重构第一刀）
+        self.tasks = TaskManager(self, self.conn)
         # 风控：平台间隔 + 文章间隔，别调太小，被限流了别来找我
         self.delay_platform = (8, 20)
         self.delay_article = (30, 90)
@@ -102,6 +114,10 @@ class Hub:
 
     def close_all(self):
         """进程退出前把池里所有浏览器关干净（atexit 兜底，CLI/serve 都生效）。"""
+        try:
+            self.tasks.close()
+        except Exception:
+            pass
         with self._pool_lock:
             victims = list(self._pool.values())
             self._pool.clear()
@@ -508,7 +524,7 @@ class Hub:
                        draft_only=False, page_hook=None):
         """发布到单个平台并完成落库（jobs/publications 记账）。
 
-        legacy publish() 循环体与工作流引擎（workflows.nodes.publish_platform）
+        统一入口：legacy 与任务引擎都走这里（重构第一刀）
         共用的唯一发布原语。成功返回结果 dict（platform/ok/status/post_id/...），
         失败在完成失败记账后抛异常。
         """
@@ -534,6 +550,7 @@ class Hub:
                                   edit_url=r.get("edit_url", ""),
                                   status=status,
                                   draft_only=1 if r.get("draft_only") else 0,
+                                  content_hash=_content_hash(article),
                                   published_at=db.now())
             db.finish_job(self.conn, job, True,
                           "发布成功" + (f"（警告: {warning}）" if warning else ""))
@@ -611,8 +628,13 @@ class Hub:
         legacy update() 循环体与工作流节点 update_instance 共用的唯一更新原语
         （对称于 publish_single，M5/ADR-007）。pub 携带 post_id/edit_url。
         成功返回 {'platform', 'ok': True}；失败在完成失败记账后抛异常。
-        平台间 sleep 留在各自编排层（legacy 循环 / workflow triage）——
+        平台间 sleep 由本层统一控制——
         本方法为逐行搬移 legacy 循环体（R3 门禁：行为逐字不变）。"""
+        # 内容没变就不空发：改过的才值得占平台额度（B13 数据层加固）
+        pub_hash = pub["content_hash"] if isinstance(pub, dict) else pub["content_hash"]
+        if pub_hash == _content_hash(article):
+            return {"platform": platform, "ok": True, "skipped": "内容未变化"}
+
         job = db.add_job(self.conn, "update", article_id, platform)
         try:
             def _do(ad, page):
@@ -620,7 +642,8 @@ class Hub:
             self._with_adapter(platform, account, _do)
             db.upsert_publication(self.conn, article_id, platform, account,
                                   status="ok", last_error="",
-                                  draft_only=0, updated_at=db.now())
+                                  draft_only=0, content_hash=_content_hash(article),
+                                  updated_at=db.now())
             db.finish_job(self.conn, job, True, "原地更新成功")
             return {"platform": platform, "ok": True}
         except Exception as e:   # aqg: top-level boundary（失败记账后重抛，publish_single 对称）

@@ -30,7 +30,7 @@ import threading
 import time
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from patchright.sync_api import sync_playwright   # 反检测 fork，替代手写 STEALTH_JS
 
 
 # ---------------------------------------------------------------------------
@@ -257,143 +257,44 @@ PROFILE_ROOT = ROOT / "data" / "profiles"
 DEBUG_DIR = ROOT / "data" / "debug"
 CAPTCHA_DIR = ROOT / "data" / "captcha"
 
-# ---------------------------------------------------------------------------
-# 反检测。各家风控盯的无非是这几个点，逐条抹平。
-# 注意：这些是"别露馅"，不是"攻击"——目的只是让自动化浏览器不被一眼看穿。
-# ---------------------------------------------------------------------------
-STEALTH_JS = """
-// 1) navigator.webdriver —— 最经典的一个指纹，headless 下恒为 true
-Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-delete Object.getPrototypeOf(navigator).webdriver;
 
-// 2) 语言/插件：无头环境默认是空的，一眼假
-Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
-Object.defineProperty(navigator, 'plugins', {
-  get: () => [
-    { name: 'PDF Viewer' }, { name: 'Chrome PDF Viewer' },
-    { name: 'Chromium PDF Viewer' }, { name: 'Microsoft Edge PDF Viewer' },
-    { name: 'WebKit built-in PDF' }
-  ]
-});
+def _find_chrome():
+    """定位可用的 Chromium 可执行文件。
 
-// 3) window.chrome：真 Chrome 有，Playwright 里没有
-window.chrome = window.chrome || { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} };
+    patchright 的 chromium 需要单独 install（国内网络常失败），
+    这里允许复用预装的 playwright chromium——patchright 与 playwright
+    同源（CDP 协议兼容），直接指定 executable_path 驱动即可。
+    """
+    import glob
+    home = Path.home() / ".cache" / "ms-playwright"
+    for root in (Path("/opt/vm/preinstall/ms-playwright"), home):
+        for pat in ("chromium-*/chrome-linux/chrome",
+                    "chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell"):
+            hits = sorted(glob.glob(str(root / pat)))
+            if hits:
+                return hits[-1]
+    return None
 
-// 4) permissions.query 对 notifications 的行为差异
-const origQuery = window.navigator.permissions.query;
-window.navigator.permissions.query = (p) =>
-  p.name === 'notifications'
-    ? Promise.resolve({ state: Notification.permission })
-    : origQuery(p);
 
-// 5) WebGL 指纹：无头下 vendor/renderer 会暴露 SwiftShader
-const getParam = WebGLRenderingContext.prototype.getParameter;
-WebGLRenderingContext.prototype.getParameter = function (p) {
-  if (p === 37445) return 'Intel Inc.';                       // UNMASKED_VENDOR_WEBGL
-  if (p === 37446) return 'Intel Iris OpenGL Engine';          // UNMASKED_RENDERER_WEBGL
-  return getParam.call(this, p);
-};
+_CHROME_BIN = _find_chrome()
 
-// 6) 硬件参数：0 核 0 内存也一眼假
-Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
 
-// 7) 无头下 outerWidth/Height 等于 inner，是个破绽
-if (window.outerWidth === 0) {
-  Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth });
-  Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight + 88 });
-}
-
-// 8) 有的风控会检测 CDP 注入的 Runtime.enable 痕迹
-try {
-  const origToString = Function.prototype.toString;
-  Function.prototype.toString = function () {
-    if (this === origToString) return 'function toString() { [native code] }';
-    return origToString.call(this);
-  };
-} catch (e) {}
-
-// 9) CDP 痕迹：Runtime / DOM 注入留下的属性。真 Chrome 走 CDP 也会留，
-//    但 Playwright 默认注入顺序异常，补平让注入痕迹"无害化"。
-try {
-  Object.defineProperty(window, '__playwright', { get: () => undefined, configurable: true });
-  Object.defineProperty(window, '__pw_manual', { get: () => undefined, configurable: true });
-  delete window.__PW_inspectable;
-} catch (e) {}
-
-// 10) 行为高斯延迟：把 JS 里可观测的"动作间隔"统一成高斯分布。
-//     风控 2026 起开始比对动作间隔的熵——均匀抖动序列熵偏低反而更像脚本。
-//     这里暴露一个 window.__gaussDelay 供注入页内调用，默认关闭（避免副作用），
-//     由 humanize.gaussian_delay 在 Python 侧统一调度，JS 侧只做"能力"。
-try {
-  window.__gaussDelay = (center, spread, minMs, maxMs) => {
-    // Box-Muller
-    const u1 = Math.random() || 1e-9, u2 = Math.random();
-    let z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-    let v = center + z * (spread || 0);
-    v = Math.max(minMs || 0, Math.min(maxMs || 5000, v));
-    return new Promise(r => setTimeout(r, v));
-  };
-} catch (e) {}
-
-// 11) WebGL 扩展指纹补平：无头/自动化下 extensions 列表与真机差异明显
-try {
-  const origGetSupportedExtensions = WebGLRenderingContext.prototype.getSupportedExtensions;
-  if (origGetSupportedExtensions) {
-    WebGLRenderingContext.prototype.getSupportedExtensions = function () {
-      const list = origGetSupportedExtensions.call(this) || [];
-      const want = ['EXT_color_buffer_float','EXT_float_texture','OES_texture_float',
-                    'WEBGL_depth_texture','ANGLE_instanced_arrays'];
-      const merged = [...new Set([...list, ...want])];
-      return merged;
-    };
-  }
-} catch (e) {}
-
-// 12) 时区/DPI 一致性：无头下 screen 参数常常与 viewport 不一致，被一眼识别
-try {
-  if (!window.devicePixelRatio || window.devicePixelRatio === 0) {
-    Object.defineProperty(window, 'devicePixelRatio', { get: () => 1 });
-  }
-  if (window.screen) {
-    Object.defineProperty(window.screen, 'availHeight', { get: () => 1040 });
-    Object.defineProperty(window.screen, 'availWidth',  { get: () => 1920 });
-  }
-} catch (e) {}
-"""
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
-# 启动参数：把能泄露自动化的开关全关掉
+# 启动参数：只留容器/服务器必需项；反检测 hack 全删（patchright 内置处理）
 LAUNCH_ARGS = [
     "--no-sandbox",
     "--disable-dev-shm-usage",
-    "--disable-blink-features=AutomationControlled",   # 关键：去掉 navigator.webdriver 的来源
-    "--disable-features=IsolateOrigins,site-per-process,AutomationControlled",
-    "--disable-infobars",
     "--no-first-run",
     "--no-default-browser-check",
-    "--disable-background-timer-throttling",
-    "--disable-renderer-backgrounding",
-    # 反检测补强（2026）：
-    #  禁用 GPU 进程单独沙箱指纹（避免 headless 下 GL 实现与真机不一致）
-    "--use-angle=swiftshader-webgl",
-    #  关掉 WebRTC UDP 泄漏（自动化环境 NAT 行为与真人不同）
-    "--force-webrtc-ip-handling-policy=default_public_private_only",
-    #  媒体设备列表为空时也会被识别，统一用虚拟设备
-    "--use-fake-ui-for-media-stream",
-    #  禁用自动化相关的 DevTools 默认注入
-    "--disable-features=AutomationControllerForTesting",
     "--window-size=1440,900",
 ]
 
-# 注：TLS/JA3 指纹在 Python 侧 Playwright 无法直接覆写（握手在 Chromium 内部），
-# 能做的两层是：
-#  1) 上述 launch args 关掉能区分自动化的网络行为开关
-#  2) STEALTH_JS 第 10/12 项抹平 WebGL 扩展 / 时区 DPI / 行为间隔这些"二阶指纹"
-# 真正的 JA3/JA4 完全抹平需要反检测浏览器层（rebrowser / Send.win / patchright），
-# 那是 2026 对标里 §8.3 第 6 条"评估接入反检测浏览器层"的内容，超出 JS patch 天花板。
+# 注：TLS/JA3 指纹在 Python 侧无法直接覆写（握手在 Chromium 内部）。
+# patchright fork 内置了 TLS 指纹与自动化痕迹处理——这正是换它的原因；
+# 极端对抗（JA3/JA4 全抹平）需要商业反检测浏览器层，超出本工具范围。
 
 
 # ---------------------------------------------------------------------------
@@ -662,6 +563,8 @@ class BuiltinBrowser:
         if self.proxy:
             opts["proxy"] = self.proxy
         try:
+            if _CHROME_BIN:
+                opts["executable_path"] = str(_CHROME_BIN)
             self._ctx = self._pw.chromium.launch_persistent_context(**opts)
         except Exception as e:
             # 最常见的翻车：同一个 profile 被另一个实例占着（比如正在扫码登录）。
@@ -672,7 +575,6 @@ class BuiltinBrowser:
                 msg = (f"profile 被占用（{self.platform}/{self.account} 的浏览器正在别处运行，"
                        f"可能正在扫码登录）。等它结束再试，或删 {self.profile_dir} 重建")
             raise RuntimeError(msg) from e
-        self._ctx.add_init_script(STEALTH_JS)
         self._import_auth()
         return self._ctx
 

@@ -8,6 +8,7 @@
   jobs         任务流水（谁在什么时候发了什么，失败原因可查）
 """
 
+import json
 import sqlite3
 import threading
 import time
@@ -92,6 +93,7 @@ CREATE TABLE IF NOT EXISTS publications (
     draft_only  INTEGER DEFAULT 1,      -- 是否只到草稿
     stats       TEXT DEFAULT '{}',      -- 阅读/点赞等 JSON
     last_error  TEXT DEFAULT '',
+    content_hash TEXT DEFAULT '',      -- 上次发布内容的 sha256，update 前比对用
     published_at REAL,
     updated_at  REAL,
     UNIQUE(article_id, platform, account)
@@ -114,7 +116,87 @@ CREATE INDEX IF NOT EXISTS idx_pub_platform ON publications(platform);
 CREATE INDEX IF NOT EXISTS idx_articles_status ON articles(status);
 CREATE INDEX IF NOT EXISTS idx_articles_updated ON articles(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_type_status ON jobs(type, status);
+
+-- schema 版本表：重建不删数据，迁移靠 meta.schema_version + MIGRATIONS 增量
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
+-- 统一任务引擎表（重构第一刀：替代 LangGraph 双库 + 三个内存任务字典）
+CREATE TABLE IF NOT EXISTS tasks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id     TEXT NOT NULL UNIQUE,     -- 对外暴露的短 id（uuid hex[:10]）
+    kind        TEXT NOT NULL,            -- publish/update/sync/refresh/login/assist
+    article_id  INTEGER,
+    platforms   TEXT DEFAULT '[]',        -- JSON 数组
+    account     TEXT DEFAULT 'default',
+    draft_only  INTEGER DEFAULT 0,
+    status      TEXT NOT NULL DEFAULT 'pending',  -- pending/running/ok/failed/waiting_human
+    message     TEXT DEFAULT '',
+    result      TEXT DEFAULT '{}',        -- JSON
+    error       TEXT DEFAULT '',
+    attempts    INTEGER DEFAULT 0,
+    created_at  REAL,
+    updated_at  REAL,
+    finished_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
 """
+
+# 增量迁移：按版本号从小到大执行；已执行过的版本跳过。
+# 每项是 (版本号, 需要执行的 SQL 列表)。迁移只增不改，禁止删除已有列。
+MIGRATIONS = [
+    # v1: 无——tasks/meta 表随 SCHEMA 创建，这里留占位以便后续版本对齐
+    (1, []),
+    # v2: publications 加 content_hash（update 前内容比对，没变不空发）
+    (2, ["ALTER TABLE publications ADD COLUMN content_hash TEXT DEFAULT ''"]),
+]
+
+
+def _schema_version(conn):
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        return int(row["value"]) if row else 0
+    except Exception:
+        return 0
+
+
+def _has_column(conn, table, column):
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(r["name"] == column for r in rows)
+    except Exception:
+        return False
+
+
+def migrate(conn):
+    """把库从当前 schema_version 逐步升到最新。幂等：已执行的版本跳过。
+
+    兼容新库（SCHEMA 已含新列）与旧库（需 ALTER）：执行迁移前先检查
+    列是否存在，避免对新建表重复 ADD COLUMN 报 duplicate column。
+    """
+    v = _schema_version(conn)
+    for ver, sqls in sorted(MIGRATIONS):
+        if ver <= v:
+            continue
+        for sql in sqls:
+            # ALTER TABLE ... ADD COLUMN 的幂等保护：列已存在则跳过
+            if sql.lstrip().upper().startswith("ALTER TABLE") and "ADD COLUMN" in sql.upper():
+                try:
+                    table = sql.split("ADD COLUMN", 1)[0].replace("ALTER TABLE", "").strip()
+                    column = sql.split("ADD COLUMN", 1)[1].split()[0].strip('"`')
+                    if _has_column(conn, table, column):
+                        continue
+                except Exception:
+                    pass
+            conn.execute(sql)
+        conn.execute(
+            "INSERT INTO meta(key,value) VALUES('schema_version',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(ver),))
+        conn.commit()
+    return _schema_version(conn)
 
 
 def connect(db_path=None):
@@ -131,6 +213,8 @@ def connect(db_path=None):
     conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA)
+    # 建表后再跑增量迁移（v2+ 列变更），migrate 幂等，多开无副作用
+    migrate(conn)
     prune_jobs(conn, keep=500)
     return conn
 
@@ -220,12 +304,13 @@ def upsert_publication(conn, article_id, platform, account="default", **kw):
         return row["id"]
     cur = conn.execute(
         """INSERT INTO publications (article_id, platform, account, post_id, post_url,
-           edit_url, status, draft_only, stats, last_error, published_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+           edit_url, status, draft_only, stats, last_error, content_hash,
+           published_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (article_id, platform, account, kw.get("post_id", ""), kw.get("post_url", ""),
          kw.get("edit_url", ""), kw.get("status", "pending"),
          kw.get("draft_only", 1), kw.get("stats", "{}"), kw.get("last_error", ""),
-         kw.get("published_at"), now()))
+         kw.get("content_hash", ""), kw.get("published_at"), now()))
     conn.commit()
     return cur.lastrowid
 
@@ -283,3 +368,61 @@ def upsert_account(conn, platform, name, profile_dir, status="unknown"):
 
 def list_accounts(conn):
     return conn.execute("SELECT * FROM accounts ORDER BY platform").fetchall()
+
+
+# --------------------------- tasks（统一任务引擎） ---------------------------
+
+def create_task(conn, task_id, kind, article_id=None, platforms=None,
+                account="default", draft_only=False):
+    cur = conn.execute(
+        """INSERT INTO tasks (task_id, kind, article_id, platforms, account,
+           draft_only, status, created_at, updated_at)
+           VALUES (?,?,?,?,?,?, 'pending', ?,?)""",
+        (task_id, kind, article_id, json.dumps(platforms or []),
+         account, 1 if draft_only else 0, now(), now()))
+    conn.commit()
+    return task_id
+
+
+def get_task(conn, task_id):
+    row = conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+    if not row:
+        return None
+    return dict(row)
+
+
+def list_tasks(conn, limit=50, kind=None, status=None):
+    sql = "SELECT * FROM tasks"
+    where, args = [], []
+    if kind:
+        where.append("kind=?")
+        args.append(kind)
+    if status:
+        where.append("status=?")
+        args.append(status)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id DESC LIMIT ?"
+    args.append(limit)
+    return [dict(r) for r in conn.execute(sql, args).fetchall()]
+
+
+def update_task(conn, task_id, **kw):
+    if not kw:
+        return
+    kw["updated_at"] = now()
+    sets = ", ".join(f"{k}=?" for k in kw)
+    conn.execute(f"UPDATE tasks SET {sets} WHERE task_id=?", (*kw.values(), task_id))
+    conn.commit()
+
+
+def prune_tasks(conn, keep=200):
+    """tasks 表只留最近 keep 条（含全部 waiting_human），防无限膨胀。"""
+    try:
+        conn.execute("""DELETE FROM tasks WHERE status != 'waiting_human'
+                        AND id NOT IN (SELECT id FROM tasks
+                                       WHERE status != 'waiting_human'
+                                       ORDER BY id DESC LIMIT ?)""", (keep,))
+        conn.commit()
+    except Exception:
+        pass

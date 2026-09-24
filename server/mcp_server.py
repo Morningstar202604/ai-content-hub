@@ -123,171 +123,37 @@ def edit_article(id: int, title: str = "", content_md: str = "",
     return json.dumps({"ok": ok, "pending_sync": pend}, ensure_ascii=False)
 
 
-@mcp.tool(description="发布到指定平台（AI 源强制过合规门禁）。经 LangGraph 工作流引擎执行，"
-                      "返回 run_id 可查 /runs；平台需人工时 results 带 warning 与 edit_url")
+@mcp.tool(description="发布到指定平台（AI 源强制过合规门禁）。同步执行，返回各平台结果；"
+                      "平台需人工收尾时 results 对应项带 warning 与 edit_url")
 def publish_article(id: int, platforms, draft_only: bool = False):
     if not _check_rate("publish_article"):
         return json.dumps({"ok": False, "reason": "触发限流，请稍后再试"},
                           ensure_ascii=False)
-    run_id, rows = None, None
-    try:
-        start = _runner().start(id, platforms, draft_only=draft_only)
-        run_id = start["run_id"]
-        deadline = time.time() + 300       # 平台间风控 sleep 8-20s/台，5 分钟硬顶
-        run = None
-        while time.time() < deadline:
-            run = _runner().get(run_id)
-            if run and run.get("status") in ("done", "failed", "waiting_human"):
-                break
-            time.sleep(2)
-        if not run or run.get("status") == "running":
-            raise TimeoutError("工作流发布超时（run 仍在执行，切勿立即重发防双发）")
-        res = run.get("result") or {}
-        if run["status"] == "failed":
-            rows = res.get("results") or [
-                {"platform": p, "ok": False, "error": run.get("error") or "工作流失败"}
-                for p in platforms]
-        elif run["status"] == "waiting_human":
-            t = res.get("human_task") or {}
-            rows = list(res.get("results") or []) + [
-                {"platform": t.get("platform", ""), "ok": True,
-                 "warning": t.get("message", "需要人工完成最后一步"),
-                 "edit_url": t.get("edit_url", "")}]
-        else:
-            rows = res.get("results") or []
-    except Exception:
-        # 仅"启动失败"（引擎禁用/文章不存在）回退 legacy；已启动绝不回退防双发
-        if run_id is None:
-            rows = hub.publish(id, platforms, draft_only=draft_only)
-        else:
-            raise
+    rows = hub.publish(id, platforms, draft_only=draft_only)
     emit("mcp.tool", tool="publish_article", id=id, platforms=platforms,
-         draft_only=draft_only, run_id=run_id)
-    out = {"run_id": run_id, "results": rows} if run_id else rows
-    return json.dumps(out, ensure_ascii=False, default=str)
+         draft_only=draft_only)
+    return json.dumps(rows, ensure_ascii=False, default=str)
 
 
-_RUNNER = None
-
-
-def _runner():
-    """工作流引擎单例（首次调用才构建，避免 mcp 启动即拉起图）。"""
-    global _RUNNER
-    if _RUNNER is None:
-        from workflows.runner import WorkflowRunner
-        _RUNNER = WorkflowRunner(hub)
-    return _RUNNER
-
-
-@mcp.tool(description="原地更新已发布的文章（经 LangGraph 工作流引擎；返回 run_id + results，平台需人工时带 warning；错误码 404 文章不存在 / 422 无目标实例）")
+@mcp.tool(description="原地更新已发布的文章。同步执行，返回各平台结果；平台需人工时带 warning；"
+                      "错误码 404 文章不存在 / 422 无目标实例")
 def update_article(id: int, platforms=None):
     if not _check_rate("update_article"):
         return json.dumps({"ok": False, "reason": "触发限流，请稍后再试"},
                           ensure_ascii=False)
-    run_id, rows = None, None
-    try:
-        start = _runner().start(id, platforms, kind='update')
-        run_id = start["run_id"]
-        # update 平台间隔是 delay_article 30–90s×N——deadline 900s，勿照抄 publish 的 300s（R2）
-        deadline = time.time() + 900
-        run = None
-        while time.time() < deadline:
-            run = _runner().get(run_id)
-            if run and run.get("status") in ("done", "failed", "waiting_human"):
-                break
-            time.sleep(2)
-        if not run or run.get("status") == "running":
-            raise TimeoutError(f"工作流更新超时（run {run_id} 仍在执行；"
-                               f"切勿立即重发防双发，请先查 /runs/{run_id}）")
-        res = run.get("result") or {}
-        if run["status"] == "failed":
-            rows = res.get("results") or [
-                {"platform": p, "ok": False, "error": run.get("error") or "工作流更新失败"}
-                for p in (platforms or [])]
-        elif run["status"] == "waiting_human":
-            t = res.get("human_task") or {}
-            rows = list(res.get("results") or []) + [
-                {"platform": t.get("platform", ""), "ok": True,
-                 "warning": t.get("message", "需要人工处理后恢复"),
-                 "edit_url": t.get("edit_url", "")}]
-        else:
-            rows = res.get("results") or []
-    except Exception:   # aqg: top-level boundary（回退闸门：仅启动失败放行）
-        # 仅"启动失败"（run_id 为空：引擎禁用/文章不存在/无目标实例——无目标回退后
-        # legacy 返回 {"skipped":...}，契约对齐）才回退 legacy；
-        # 已启动绝不回退防双发（update 虽为覆盖式写，纪律同 publish）
-        if run_id is None:
-            rows = hub.update(id, platforms)
-        else:
-            raise
-    emit("mcp.tool", tool="update_article", id=id, platforms=platforms,
-         run_id=run_id)
-    out = {"run_id": run_id, "results": rows} if run_id else rows
-    return json.dumps(out, ensure_ascii=False, default=str)
+    rows = hub.update(id, platforms)
+    emit("mcp.tool", tool="update_article", id=id, platforms=platforms)
+    return json.dumps(rows, ensure_ascii=False, default=str)
 
 
-@mcp.tool(description="把所有改动同步到已发布平台（经 LangGraph 工作流引擎，一文一 run；"
-                      "返回 run_ids + legacy 形状结果 + failed 启动失败清单）")
+@mcp.tool(description="把所有改动同步到已发布平台。同步执行，返回各文章各平台结果")
 def sync_pending():
     if not _check_rate("sync_pending"):
         return json.dumps({"ok": False, "reason": "触发限流，请稍后再试"},
                           ensure_ascii=False)
-    from core import db as hub_db
-    run_ids, started, failed = [], [], []
-    try:
-        # 发现 + 分组（与 legacy sync_pending 同一段 SQL）
-        rows = hub_db.get_pending_updates(hub.conn)
-        groups = {}
-        for r in rows:
-            groups.setdefault(r["article_id"],
-                              {"title": r["title"], "platforms": []})
-            groups[r["article_id"]]["platforms"].append(r["platform"])
-        # 一文一 run 扇出（ADR-008）：单篇启动失败进 failed[]，不中断其余（B4）
-        for aid, info in groups.items():
-            try:
-                s = _runner().start(aid, sorted(set(info["platforms"])),
-                                    kind='update')
-                run_ids.append(s["run_id"])
-                started.append({"article_id": aid, "title": info["title"],
-                                "platforms": sorted(set(info["platforms"])),
-                                "run_id": s["run_id"]})
-            except ValueError as e:
-                failed.append({"article_id": aid, "title": info["title"],
-                               "reason": str(e)})
-        if not run_ids:
-            # 一篇都没启动成功（无 pending 或全启动失败）→ 回退 legacy 重新发现；
-            # 无 run 即无双发（failed 非空也回退，架构 §6.4 裁定）
-            return json.dumps(hub.sync_pending(), ensure_ascii=False, default=str)
-        # 轮询全部 run 至终态（deadline 900s：delay_article 30–90s×N 平台，R2）
-        deadline = time.time() + 900
-        done_map = {s["article_id"]: None for s in started}
-        while time.time() < deadline and any(v is None for v in done_map.values()):
-            for s in started:
-                if done_map[s["article_id"]] is None:
-                    run = _runner().get(s["run_id"])
-                    if run and run.get("status") in ("done", "failed",
-                                                     "waiting_human"):
-                        done_map[s["article_id"]] = run
-            if any(v is None for v in done_map.values()):
-                time.sleep(2)
-        out_rows = []
-        for s in started:
-            run = done_map[s["article_id"]] or _runner().get(s["run_id"]) or {}
-            res = run.get("result") or {}
-            out_rows.append({"article_id": s["article_id"], "title": s["title"],
-                             "platforms": s["platforms"],
-                             "result": res.get("results"),
-                             "status": run.get("status"),
-                             "run_id": s["run_id"]})
-        emit("mcp.tool", tool="sync_pending", run_ids=run_ids, failed=failed)
-        return json.dumps({"run_ids": run_ids, "failed": failed,
-                           "results": out_rows},
-                          ensure_ascii=False, default=str)
-    except Exception:   # aqg: top-level boundary（回退闸门：run_ids 空才放行）
-        # 仅"一篇都没启动成功"才回退 legacy；run_ids 非空绝不回退（防双发，§6.4）
-        if not run_ids:
-            return json.dumps(hub.sync_pending(), ensure_ascii=False, default=str)
-        raise
+    out = hub.sync_pending()
+    emit("mcp.tool", tool="sync_pending")
+    return json.dumps(out, ensure_ascii=False, default=str)
 
 
 @mcp.tool(description="抓取平台上已有文章列表入库（AI 才能看见账号里有什么）")

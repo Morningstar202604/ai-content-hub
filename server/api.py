@@ -167,8 +167,13 @@ class PublishIn(BaseModel):
 
 
 class UpdateIn(BaseModel):
-    platforms: Optional[List[str]] = None
+    platforms: Optional[List[str]] = None   # None/缺省 = 全部可更新实例
     account: str = "default"
+
+
+class ResumeIn(BaseModel):
+    approved: bool = True
+    note: str = ""
 
 
 class ImportIn(BaseModel):
@@ -231,116 +236,68 @@ def import_md(body: ImportIn):
     return {"id": hub.import_md(body.path, tags=body.tags)}
 
 
-# ---------------- 发布 / 更新 ----------------
+# ---------------- 发布 / 更新 / 同步（统一任务引擎语义，重构第一刀） ----------------
+# 三套入口（legacy 同步 / async / workflow）合并为一套：提交任务 → 返回 task_id →
+# 轮询 GET /tasks/{task_id}。AI/无人值守与 Web 前端走同一条路，不再有回退分支。
 
 @app.post("/articles/{aid}/publish")
 def publish(aid: int, body: PublishIn):
-    return hub.publish(aid, body.platforms, body.account, body.draft_only)
+    """异步发布：提交到统一任务引擎，立即返回 task_id，轮询 GET /tasks/{task_id}。"""
+    task_id = hub.tasks.submit("publish", article_id=aid, platforms=body.platforms,
+                               account=body.account, draft_only=body.draft_only)
+    return {"task_id": task_id, "status": "pending", "poll": f"/tasks/{task_id}"}
 
 
-# 体检 B5 修复（QA 标质力 2026-09-21）：发布是 70s+ 的长任务，同步 HTTP 必超时。
-# 仿 LOGIN_TASKS 模式加异步任务：立即返回 task_id，轮询取结果。原同步端点保留
-# （Web 前端零改动）；AI/无人值守调用走这个异步口。live=True 时附带实时预览页。
-PUBLISH_TASKS = {}
-PUBLISH_TASK_TTL = 1800     # 完成后保留 30 分钟（含预览页观看窗口）
-PUBLISH_TASK_MAX = 50
-
-
-def _gc_publish_tasks():
-    now_ts = time.time()
-    dead = [k for k, v in PUBLISH_TASKS.items()
-            if v.get("status") != "running"
-            and now_ts - v.get("finished_at", now_ts) > PUBLISH_TASK_TTL]
-    for k in dead:
-        mon = PUBLISH_TASKS[k].pop("_monitor", None)
-        if mon:
-            try:
-                mon.stop()
-            except Exception:
-                pass
-        PUBLISH_TASKS.pop(k, None)
-    while len(PUBLISH_TASKS) > PUBLISH_TASK_MAX:
-        k = next(iter(PUBLISH_TASKS))
-        mon = PUBLISH_TASKS[k].pop("_monitor", None)
-        if mon:
-            try:
-                mon.stop()
-            except Exception:
-                pass
-        PUBLISH_TASKS.pop(k, None)
-
-
-@app.post("/articles/{aid}/publish/async")
-def publish_async(aid: int, body: PublishIn):
-    """异步发布：立即返回 task_id，轮询 GET /publish/tasks/{task_id}。
-    live=true 时同线程挂 LiveMonitor（CDP 截屏流），返回的 preview_url
-    可直接在应用内置浏览器面板打开围观整个发布过程。"""
-    import threading
-    import uuid
-    task_id = uuid.uuid4().hex[:10]
-    PUBLISH_TASKS[task_id] = {
-        "task_id": task_id, "article_id": aid, "platforms": body.platforms,
-        "account": body.account, "draft_only": body.draft_only,
-        "status": "running", "message": "排队中…", "result": None,
-    }
-
-    def _run():
-        mon = None
-        try:
-            hook = None
-            if body.live:
-                from core.liveview import LiveMonitor
-                mon = LiveMonitor(port=0, platform="+".join(body.platforms))
-                mon.start()
-                PUBLISH_TASKS[task_id]["preview_url"] = mon.url()
-                PUBLISH_TASKS[task_id]["_monitor"] = mon
-
-                def hook(page):
-                    # CDP 截屏由浏览器推帧，规避 greenlet 线程限制
-                    mon.attach_cdp(page)
-                    mon.log(f"发布任务 {task_id} 开始：{body.platforms}")
-
-            result = hub.publish(aid, body.platforms, body.account,
-                                 body.draft_only, page_hook=hook)
-            PUBLISH_TASKS[task_id].update(status="success", result=result,
-                                          finished_at=time.time(),
-                                          message="发布完成")
-            if mon:
-                mon.log("发布任务完成 ✓")
-        except Exception as e:
-            PUBLISH_TASKS[task_id].update(
-                status="failed", message=f"{type(e).__name__}: {e}",
-                finished_at=time.time())
-            if mon:
-                mon.log(f"发布任务失败 ✗ {type(e).__name__}: {str(e)[:120]}")
-        _gc_publish_tasks()
-
-    threading.Thread(target=_run, daemon=True).start()
-    return {"task_id": task_id, "status": "running",
-            "poll": f"/publish/tasks/{task_id}"}
-
-
-@app.get("/publish/tasks/{task_id}")
-def publish_task_status(task_id: str):
-    """轮询异步发布任务：running / success / failed（含 result 与 preview_url）。"""
-    task = PUBLISH_TASKS.get(task_id)
-    if not task:
-        return {"task_id": task_id, "status": "unknown",
-                "message": "任务不存在或已过期（保留 30 分钟）"}
-    return {k: v for k, v in task.items() if not k.startswith("_")}
-
-
-# legacy 回退路径（strangler 第二刀/M5）：主路径为 POST /articles/{aid}/update/workflow；
-# 语义冻结见 docs/design/m5-api.md §7-C；防双发纪律：同一文章同一平台只走一条路径
 @app.post("/articles/{aid}/update")
 def update(aid: int, body: UpdateIn):
-    return hub.update(aid, body.platforms, body.account)
+    """异步原地更新：提交任务，轮询 GET /tasks/{task_id}。"""
+    task_id = hub.tasks.submit("update", article_id=aid, platforms=body.platforms,
+                               account=body.account)
+    return {"task_id": task_id, "status": "pending", "poll": f"/tasks/{task_id}"}
 
 
-# legacy 回退路径（strangler 第二刀/M5）：主路径为 POST /sync/pending/workflow（一文一 run）
 @app.post("/sync/pending")
-def sync_pending():
-    return hub.sync_pending()
+def sync_pending(body: Optional[UpdateIn] = None):
+    """异步同步扇出：把所有待更新实例提交一个 sync 任务，引擎内部分组执行。"""
+    account = body.account if body else "default"
+    task_id = hub.tasks.submit("sync", account=account)
+    return {"task_id": task_id, "status": "pending", "poll": f"/tasks/{task_id}"}
+
+
+# ---------------- 统一任务查询 / 恢复 ----------------
+
+@app.get("/tasks")
+def tasks_list(limit: int = 50, kind: str = None, status: str = None):
+    """任务列表（替代原 /runs）：按 kind/status 过滤，默认返回最近 50 条。"""
+    return hub.tasks.list(limit=limit, kind=kind, status=status)
+
+
+@app.get("/tasks/{task_id}")
+def tasks_detail(task_id: str):
+    """查询任意任务状态：pending / running / ok / failed / waiting_human。"""
+    t = hub.tasks.get(task_id)
+    if not t:
+        raise HTTPException(404, "任务不存在或已过期")
+    t = dict(t)
+    try:
+        t["result"] = json.loads(t.get("result") or "{}")
+    except Exception:
+        t["result"] = {}
+    try:
+        t["platforms"] = json.loads(t.get("platforms") or "[]")
+    except Exception:
+        t["platforms"] = []
+    return t
+
+
+@app.post("/tasks/{task_id}/resume")
+def tasks_resume(task_id: str, body: Optional[ResumeIn] = None):
+    """恢复 waiting_human 任务：approved=true 重新执行；false 标记放弃。"""
+    approved = body.approved if body else True
+    r = hub.tasks.resume(task_id, approved=approved)
+    if not r.get("ok"):
+        raise HTTPException(409, r.get("error", "恢复失败"))
+    return r
 
 
 @app.get("/pending-human")
@@ -399,62 +356,14 @@ class LoginIn(BaseModel):
     on_captcha: str = "handoff"
 
 
-# 登录是长任务（要等人扫码），HTTP 同步等着必超时。放后台线程跑，前端轮询状态。
-LOGIN_TASKS = {}
-LOGIN_TASK_TTL = 600      # 完成后保留 10 分钟供前端最后拉一次，然后清掉
-LOGIN_TASK_MAX = 100      # 上限保护：字典只增不删会慢慢吃内存
-
-
-def _gc_login_tasks():
-    now_ts = time.time()
-    dead = [k for k, v in LOGIN_TASKS.items()
-            if v.get("status") != "running"
-            and now_ts - v.get("finished_at", now_ts) > LOGIN_TASK_TTL]
-    for k in dead:
-        LOGIN_TASKS.pop(k, None)
-    # 超上限时丢最旧的（含 running，极端场景下可接受）
-    while len(LOGIN_TASKS) > LOGIN_TASK_MAX:
-        LOGIN_TASKS.pop(next(iter(LOGIN_TASKS)), None)
-
-
 @app.post("/accounts/{platform}/login")
 def login(platform: str, body: LoginIn):
-    """异步启动登录：立即返回 task_id，前端轮询 /login/status。
-    会开一个有头浏览器，去平台登录页，等你扫码；登录态落盘后任务结束。"""
-    import threading
-    import uuid
-    task_id = uuid.uuid4().hex[:10]
-    LOGIN_TASKS[task_id] = {
-        "task_id": task_id, "platform": platform, "account": body.account,
-        "status": "running",
-        "message": "浏览器已打开平台登录页，等待扫码/登录…",
-    }
-
-    def _run():
-        try:
-            ok, msg = hub.login(platform, body.account, body.timeout, body.on_captcha)
-            LOGIN_TASKS[task_id].update(ok=ok,
-                                        status="success" if ok else "failed",
-                                        message=msg, finished_at=time.time())
-        except Exception as e:
-            LOGIN_TASKS[task_id].update(ok=False, status="failed",
-                                        message=f"{type(e).__name__}: {e}",
-                                        finished_at=time.time())
-        _gc_login_tasks()
-
-    threading.Thread(target=_run, daemon=True).start()
-    return {"task_id": task_id, "platform": platform, "status": "running"}
-
-
-@app.get("/accounts/{platform}/login/status")
-def login_status(platform: str, task_id: str = None):
-    """轮询登录任务状态：running / success / failed。"""
-    if task_id and task_id in LOGIN_TASKS:
-        return LOGIN_TASKS[task_id]
-    for t in reversed(list(LOGIN_TASKS.values())):
-        if t["platform"] == platform:
-            return t
-    return {"platform": platform, "status": "idle", "message": "没有登录任务"}
+    """异步启动登录：提交任务，轮询 GET /tasks/{task_id}。
+    引擎会开有头浏览器去平台登录页等扫码，登录态落盘后任务结束；
+    遇验证码默认 handoff 交人工（无人值守可传 on_captcha=abort）。"""
+    task_id = hub.tasks.submit("login", platforms=[platform], account=body.account)
+    return {"task_id": task_id, "platform": platform, "status": "pending",
+            "poll": f"/tasks/{task_id}"}
 
 
 @app.get("/accounts/{platform}/diagnose")
@@ -479,50 +388,20 @@ class AssistIn(BaseModel):
     timeout: int = 900
 
 
-ASSIST_TASKS = {}
-ASSIST_TASK_MAX = 20
-
-
 @app.post("/accounts/{platform}/assist")
 def assist_open(platform: str, body: AssistIn):
-    """带登录态的内置有头浏览器打开平台页（人工步骤接管，不必去平台站点重登录）。"""
-    import threading as _th, uuid as _uuid
+    """带登录态的内置有头浏览器打开平台页（人工步骤接管），提交任务轮询结果。"""
     if not body.url.startswith(("http://", "https://")):
         raise HTTPException(422, "url 必须是 http(s) 地址")
-    task_id = _uuid.uuid4().hex[:10]
-    if len(ASSIST_TASKS) > ASSIST_TASK_MAX:
-        for k in list(ASSIST_TASKS)[: len(ASSIST_TASKS) - ASSIST_TASK_MAX]:
-            ASSIST_TASKS.pop(k, None)
-    ASSIST_TASKS[task_id] = {"task_id": task_id, "platform": platform,
-                             "url": body.url, "status": "running",
-                             "message": "内置浏览器已打开平台页（带登录态），等待人工操作…"}
-    def _run():
-        try:
-            r = hub.assist_open(platform, body.url, body.timeout)
-            ASSIST_TASKS[task_id].update(status="done", message=r.get("msg", ""),
-                                         finished_at=time.time())
-        except Exception as e:   # aqg: top-level boundary（assist 任务失败落终态）
-            ASSIST_TASKS[task_id].update(status="failed",
-                                         message=f"{type(e).__name__}: {str(e)[:200]}",
-                                         finished_at=time.time())
-    _th.Thread(target=_run, daemon=True).start()
-    return {"task_id": task_id, "status": "running",
-            "poll": f"/accounts/{platform}/assist/status?task_id={task_id}"}
-
-
-@app.get("/accounts/{platform}/assist/status")
-def assist_status(platform: str, task_id: str = None):
-    if task_id and task_id in ASSIST_TASKS:
-        return ASSIST_TASKS[task_id]
-    for t in reversed(list(ASSIST_TASKS.values())):
-        if t["platform"] == platform:
-            return t
-    return {"platform": platform, "status": "idle", "message": "没有 assist 任务"}
+    task_id = hub.tasks.submit("assist", platforms=[platform], url=body.url)
+    return {"task_id": task_id, "status": "pending", "poll": f"/tasks/{task_id}"}
 
 
 @app.post("/refresh/{platform}")
 def refresh(platform: str, limit: int = 50):
-    return hub.refresh(platform, limit=limit)
+    """异步抓取平台文章入库：提交任务，轮询 GET /tasks/{task_id}。"""
+    task_id = hub.tasks.submit("refresh", platforms=[platform])
+    return {"task_id": task_id, "status": "pending", "poll": f"/tasks/{task_id}"}
 
 
 # ---------------- AI 写稿 ----------------
@@ -601,137 +480,6 @@ def health():
     log_ok = Path(obs.EVENT_LOG.parent).exists()
     return {"ok": db_ok and log_ok, "db": db_ok, "events_log": log_ok,
             "ai_ready": hub.ai_ready(), "ts": time.time()}
-
-
-# ---------------- 工作流运行（LangGraph 引擎，ADR-001/003） ----------------
-# 绞杀者增量：以下端点为增量新增，legacy /publish 端点原样保留可随时回退。
-# config.json 设 "workflow": {"enabled": false} 可整体禁用新引擎。
-
-_RUNNER = None
-
-
-def _workflow_runner():
-    global _RUNNER
-    if _RUNNER is None:
-        from workflows.runner import WorkflowRunner
-        _RUNNER = WorkflowRunner(hub)
-    return _RUNNER
-
-
-def _workflow_enabled():
-    try:
-        cfg = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
-        return bool((cfg.get("workflow") or {}).get("enabled", True))
-    except Exception:
-        return True
-
-
-class WorkflowPublishIn(BaseModel):
-    platforms: List[str]
-    account: str = "default"
-    draft_only: bool = False
-    dry_run: bool = False     # true=预演：不触真实平台，合成结果（冒烟/演练用）
-
-
-class ResumeIn(BaseModel):
-    approved: bool = True
-    note: str = ""
-
-
-class WorkflowUpdateIn(BaseModel):
-    """M5 原地更新工作流入参（m5-api.md §2；无 draft_only——update 无草稿概念）"""
-    platforms: Optional[List[str]] = None   # null/缺省/[] 三者等价 = 全部可更新实例（B1）
-    account: str = "default"
-    dry_run: bool = False
-
-
-class WorkflowSyncIn(BaseModel):
-    """M5 同步扇出入参（m5-api.md §3；body 可整体省略）"""
-    account: str = "default"
-    dry_run: bool = False
-
-
-@app.post("/articles/{aid}/publish/workflow")
-def publish_workflow(aid: int, body: WorkflowPublishIn):
-    """Agent 驱动的工作流发布：立即返回 run_id，轮询 GET /runs/{run_id}。
-    挂起（waiting_human）时 result.human_task 带人工处理载荷，POST /runs/{id}/resume 恢复。"""
-    if not _workflow_enabled():
-        raise HTTPException(409, "工作流引擎已通过 config workflow.enabled=false 禁用")
-    try:
-        return _workflow_runner().start(aid, body.platforms, body.account,
-                                        body.draft_only, body.dry_run)
-    except ValueError as e:
-        raise HTTPException(404, str(e))
-
-
-@app.post("/articles/{aid}/update/workflow")
-def update_workflow(aid: int, body: WorkflowUpdateIn):
-    """原地更新工作流（kind=update，绞杀者第二刀）：立即返回 run_id，轮询 GET /runs/{run_id}。
-    与 legacy /update 并存（legacy 冻结保留，m5-api.md §7-C）。
-    错误映射（D-A，勿照抄 publish 的一律 404）：ValueError 按文案分流——
-    含"不存在"→404；含"没有已发布实例"→422；409 引擎禁用先于一切预检（B5）。"""
-    if not _workflow_enabled():
-        raise HTTPException(409, "工作流引擎已通过 config workflow.enabled=false 禁用")
-    try:
-        return _workflow_runner().start(aid, body.platforms, body.account,
-                                        kind='update', dry_run=body.dry_run)
-    except ValueError as e:
-        msg = str(e)
-        if "不存在" in msg:
-            raise HTTPException(404, msg)
-        raise HTTPException(422, msg)
-
-
-@app.post("/sync/pending/workflow")
-def sync_pending_workflow(body: WorkflowSyncIn = WorkflowSyncIn()):
-    """同步扇出（ADR-008，一文一 run）：发现 pending → 按文章分组 → 逐篇启动 update run。
-    单篇启动失败进 failed[] 不升级全局错误（D-D/B4）；count=0 非错误（B7）。"""
-    if not _workflow_enabled():
-        raise HTTPException(409, "工作流引擎已通过 config workflow.enabled=false 禁用")
-    from core import db as hub_db
-    rows = hub_db.get_pending_updates(hub.conn)
-    groups = {}
-    for r in rows:
-        groups.setdefault(r["article_id"], {"title": r["title"], "platforms": []})
-        groups[r["article_id"]]["platforms"].append(r["platform"])
-    runs, failed = [], []
-    for aid, info in groups.items():
-        try:
-            r = _workflow_runner().start(aid, sorted(set(info["platforms"])),
-                                         body.account, kind='update',
-                                         dry_run=body.dry_run)
-            runs.append({"article_id": aid, "title": info["title"],
-                         "run_id": r["run_id"]})
-        except ValueError as e:
-            failed.append({"article_id": aid, "title": info["title"],
-                           "reason": str(e)})
-    return {"count": len(runs), "runs": runs, "failed": failed}
-
-
-@app.get("/runs")
-def runs_list(limit: int = 50,
-              kind: Optional[Literal["publish", "update"]] = None,
-              article_id: Optional[int] = None):
-    """运行列表（向后兼容增强）：可选 kind/article_id 过滤，缺省返回全部 kind；
-    响应项新增 kind 字段（存量行 'publish'，m5-api.md §4.1）。"""
-    return _workflow_runner().list(limit, kind=kind, article_id=article_id)
-
-
-@app.get("/runs/{run_id}")
-def runs_detail(run_id: str):
-    r = _workflow_runner().get(run_id)
-    if not r:
-        raise HTTPException(404, "run 不存在")
-    return r
-
-
-@app.post("/runs/{run_id}/resume")
-def runs_resume(run_id: str, body: ResumeIn):
-    """恢复挂起的 run：approved=true 表示人已在平台侧完成最后一步（如掘金点发布）。"""
-    try:
-        return _workflow_runner().resume(run_id, body.approved, body.note)
-    except ValueError as e:
-        raise HTTPException(409, str(e))
 
 
 if __name__ == "__main__":
