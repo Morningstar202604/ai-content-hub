@@ -51,14 +51,22 @@ def _resolve_tag_ids(page, tag_names):
         try:
             data = api_tag_search(page, name)
             hit = None
+            # 字段名兼容：tag_name/name 都可能，ID 同理 tag_id/id
             for t in (data.get("data") or [])[:10]:
-                if (t.get("tag_name") or "").lower() == name.lower():
+                tname = t.get("tag_name") or t.get("name") or ""
+                if tname and tname.lower() == name.lower():
                     hit = t
                     break
-            if hit is None and (data.get("data") or []):
-                hit = data["data"][0]
-            if hit and str(hit.get("tag_id", "")) not in ids:
-                ids.append(str(hit["tag_id"]))
+            if hit is None:
+                for t in (data.get("data") or []):
+                    if t.get("tag_id") or t.get("id"):
+                        hit = t
+                        break
+            if hit:
+                tid = str(hit.get("tag_id") or hit.get("id") or "").strip()
+                # 真 tag_id 是 7 位数字；19 位的是其他对象（如文章ID），过滤
+                if tid.isdigit() and len(tid) <= 12 and tid not in ids:
+                    ids.append(tid)
         except Exception:
             continue
     if not ids:
