@@ -24,12 +24,13 @@
         </template>
       </el-dropdown>
 
-      <el-button size="small" :icon="Promotion" :disabled="dirty" @click="$emit('publish')">
+      <!-- 发布会先自动保存（不需要"先保存再发布"），loading 由 store 驱动 -->
+      <el-button size="small" :icon="Promotion" :loading="hub.publishing" @click="$emit('publish')">
         <span class="btxt">发布</span>
       </el-button>
 
       <el-button v-if="hub.updatable.length" size="small" :icon="Refresh"
-                 :disabled="dirty" :loading="hub.publishing" @click="$emit('sync-update')">
+                 :loading="hub.publishing" @click="$emit('sync-update')">
         <span class="btxt">同步更新</span>
       </el-button>
 

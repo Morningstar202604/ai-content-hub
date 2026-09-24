@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """MCP Server：让 AI 客户端（Claude Code / 任意 MCP 宿主）直接接管整个中台。
 
-2026 落地版：用 mcp 官方 SDK（mcp.server.mcpserver.MCPServer）替代原手写
+2026 落地版：用 mcp 官方 SDK（FastMCP，SDK 1.x 名；2.x 更名 MCPServer）替代原手写
 JSON-RPC，消除自管协议与维护负担。保留原 13 个工具名与语义，新增：
 
   1. 工具级限流 —— 同一工具滑动窗口 N 秒内最多 M 次，防 AI 客户端被
@@ -22,7 +22,7 @@ JSON-RPC，消除自管协议与维护负担。保留原 13 个工具名与语�
     }
 之后 AI 就能说："写篇讲 XXX 的文章发到掘金" / "把 3 号文章改个标题同步到全部平台"。
 
-依赖：mcp[cli]（已写入 requirements.txt；SDK 2.x 把 FastMCP 改名为 MCPServer）。
+依赖：mcp[cli]（已写入 requirements.txt；SDK 1.x 类名 FastMCP，2.x 更名 MCPServer，此处统一别名为 MCPServer）。
 """
 
 import asyncio
@@ -35,7 +35,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.fastmcp import FastMCP as MCPServer   # SDK 1.x 名 FastMCP；2.x 改名 MCPServer
 
 from core.service import Hub
 from core import gate as aigc_gate
@@ -74,9 +74,7 @@ def _check_rate(name: str) -> bool:
 # ---------------------------------------------------------------------------
 mcp = MCPServer(
     name="ai-content-hub",
-    title="AI 内容中台",
-    description="管理文章库、平台发布、AI 写稿、同步与合规门禁",
-    version="0.3.0",
+    instructions="AI 内容中台：管理文章库、平台发布、AI 写稿、同步与合规门禁",
 )
 
 
@@ -207,7 +205,7 @@ def ai_polish(id: int):
 # 入口
 # ---------------------------------------------------------------------------
 def main():
-    """stdio 模式跑 MCP Server（SDK 2.x 用 run_stdio_async）。"""
+    """stdio 模式跑 MCP Server（SDK 1.x/2.x 通用入口）。"""
     asyncio.run(mcp.run_stdio_async())
 
 

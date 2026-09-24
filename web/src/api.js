@@ -18,52 +18,51 @@ http.interceptors.response.use(
 
 export default http
 
+// 所有长任务统一走任务引擎：提交返回 {task_id}，轮询 task() 看进度。
+// 登录、发布、更新、同步、抓取都这么用，前端不再有第二套轮询逻辑。
 export const api = {
+  // ---------------- 总览 ----------------
   status: () => http.get('/status'),
   platforms: () => http.get('/platforms'),
   accounts: () => http.get('/accounts'),
   checkAccount: (platform, account = 'default') =>
     http.get(`/accounts/${platform}/check`, { params: { account } }),
-  // 登录是长任务（等人扫码），异步启动 + 轮询状态
+
+  // ---------------- 账号 / 登录（统一任务语义） ----------------
   startLogin: (platform, account = 'default') =>
     http.post(`/accounts/${platform}/login`, { account, timeout: 300 }),
-  loginStatus: (platform, taskId) =>
-    http.get(`/accounts/${platform}/login/status`, { params: { task_id: taskId } }),
+  assistOpen: (platform, url) =>
+    http.post(`/accounts/${platform}/assist`, { url }),
   refresh: (platform) => http.post(`/refresh/${platform}`),
 
+  // ---------------- 统一任务查询 ----------------
+  tasks: (limit = 50, kind, status) =>
+    http.get('/tasks', { params: { limit, kind, status } }),
+  task: (taskId) => http.get(`/tasks/${taskId}`),
+  resumeTask: (taskId, approved = true) =>
+    http.post(`/tasks/${taskId}/resume`, { approved }),
+
+  // ---------------- 文章 ----------------
   listArticles: (status) => http.get('/articles', { params: { status } }),
   getArticle: (id) => http.get(`/articles/${id}`),
   createArticle: (data) => http.post('/articles', data),
   updateArticle: (id, data) => http.put(`/articles/${id}`, data),
   search: (kw) => http.get(`/articles/search/${kw}`),
 
+  // ---------------- 发布 / 更新 / 同步（统一任务语义） ----------------
   publish: (id, platforms, draftOnly = false, account = 'default') =>
-    http.post(`/articles/${id}/publish`, { platforms, draft_only: draftOnly, account }),
-  // 工作流引擎发布（LangGraph，ADR-001）：立即返回 run_id，轮询 runs() 看进度
-  publishWorkflow: (id, platforms, draftOnly = false, account = 'default') =>
-    http.post(`/articles/${id}/publish/workflow`,
+    http.post(`/articles/${id}/publish`,
               { platforms, draft_only: draftOnly, account }),
-  runs: (limit = 50) => http.get('/runs', { params: { limit } }),
-  runDetail: (runId) => http.get(`/runs/${runId}`),
-  resumeRun: (runId, approved = true, note = '') =>
-    http.post(`/runs/${runId}/resume`, { approved, note }),
   update: (id, platforms, account = 'default') =>
     http.post(`/articles/${id}/update`, { platforms, account }),
-  syncPending: () => http.post('/sync/pending'),
-  // M5 切流：原地更新/同步走工作流引擎
-  updateWorkflow: (id, platforms, account = 'default') =>
-    http.post(`/articles/${id}/update/workflow`, { platforms, account }),
-  syncPendingWorkflow: (account = 'default') =>
-    http.post('/sync/pending/workflow', { account }),
-  // 人工步骤接管：带登录态的内置有头浏览器打开平台页
-  assistOpen: (platform, url) =>
-    http.post(`/accounts/${platform}/assist`, { url }),
-  assistStatus: (platform, taskId) =>
-    http.get(`/accounts/${platform}/assist/status`, { params: { task_id: taskId } }),
+  syncPending: (account = 'default') =>
+    http.post('/sync/pending', { account }),
+
   publications: (articleId) => http.get('/publications', { params: { article_id: articleId } }),
   // 需要人工处理的发布实例（掘金草稿等人点"确定并发布"）
   pendingHuman: () => http.get('/pending-human'),
 
+  // ---------------- AI 写稿 ----------------
   aiWrite: (data) => http.post('/ai/write', data),
   aiRewrite: (id, instruction, publishTo) =>
     http.post(`/articles/${id}/ai-rewrite`, { instruction, publish_to: publishTo }),

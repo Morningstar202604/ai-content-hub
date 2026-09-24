@@ -186,3 +186,28 @@ ai-content-hub/
 | 2026-09-22 | 0.3.0 | **M1 落地**：新增 workflows/（state/nodes/graph/runner）LangGraph 引擎层；service.py 抽取 publish_single 发布原语（legacy 循环与工作流共用）；api.py 新增 /articles/{aid}/publish/workflow + /runs{,/{id},/{id}/resume}；requirements.txt 增 langgraph 1.2.12 / langgraph-checkpoint-sqlite 3.1.1；冒烟脚本 scripts/smoke_workflow.py + smoke_hitl.py（dry_run 双平台、重试回边、interrupt/resume 三案全过）。M2/M3/M4 待做 |
 | 2026-09-21 | 0.2.0 | 前端双视图改版（写作/管理 + 发布向导）；/pending-human 端点 |
 | 2026-09-19 | 0.1.0 | 项目创立：文章库 × 内置浏览器 × 平台适配器 |
+
+## 0.4.0 重构记录（refactor-v1 分支，2026-09-24）
+
+以上 ADR（001/003/004 等）为 **0.3.x 历史决策**，已在重构中推翻，保留供追溯。
+
+### 推翻了什么
+
+| 旧方案 | 问题 | 新方案 |
+|---|---|---|
+| LangGraph 工作流引擎（workflows/ 870 行） | 一个"遍历平台+重试+等人"的循环被包装成双状态图，复杂度与功能不匹配 | `core/tasks.py` TaskManager：~100 行统一任务引擎，SQLite tasks 表持久化 + 单后台线程 + 确定性失败分诊 |
+| 三个内存任务字典（LOGIN/PUBLISH/ASSIST_TASKS） | 复制粘贴三份轮询逻辑，进程重启即丢 | 全部收敛到 TaskManager.submit()/get()/list()/resume() |
+| 双数据库（hub.db + workflow.db） | 备份需两文件，状态割裂 | 任务状态统一落 hub.db 的 tasks 表 |
+| playwright + 手写 STEALTH_JS（120 行 JS hack） | JS patch 天花板低，JA3/TLS 指纹抹不掉 | patchright（反检测 fork，内置 TLS/自动化痕迹处理），删除全部 LAUNCH_ARGS hack |
+| REST/MCP 双入口各自实现发布语义 | 维护两套，行为漂移 | 共用 service 层：REST 走任务引擎（异步），MCP 直接同步调 hub 方法 |
+
+### 现在的统一语义
+
+- **REST**：`POST /articles/{id}/publish|update`、`POST /sync/pending`、`POST /accounts/{p}/login|assist`、`POST /refresh/{p}` 全部返回 `{task_id}` → `GET /tasks/{task_id}` 轮询 → `POST /tasks/{task_id}/resume` 恢复。
+- **MCP**：`publish_article` / `update_article` / `sync_pending` 同步执行，直接返回各平台结果行。
+- 旧 `/runs`、`/publish/workflow`、`/login/status`、`/assist/status` 端点已删除（404），前端已全部切到 `/tasks`。
+
+### 数据层
+
+- `meta.schema_version` + `MIGRATIONS` 增量迁移（v2: publications.content_hash）。
+- publications.content_hash：更新前比对内容指纹，内容没变不空发。

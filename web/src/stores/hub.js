@@ -2,6 +2,10 @@ import { defineStore } from 'pinia'
 import { ElMessage, ElNotification, ElMessageBox } from 'element-plus'
 import { api } from '@/api'
 
+// 重构第四刀：所有长任务统一走任务引擎（tasks 表），
+// 登录/发布/更新/同步/抓取用同一套"提交 → 轮询"逻辑，不再有双轨。
+const POLL_MS = 2000
+
 export const useHubStore = defineStore('hub', {
   state: () => ({
     articles: [],
@@ -14,8 +18,8 @@ export const useHubStore = defineStore('hub', {
     stats: {},
     aiReady: false,
     pendingHuman: [],   // 需要人工处理的发布实例（掘金草稿等人点发布）
-    runs: [],           // 工作流运行列表（LangGraph，ADR-001）
-    loginStates: {},    // platform -> {status, message}，登录轮询状态（向导/管理页共用）
+    tasks: [],          // 统一任务列表（替代 runs）
+    loginTasks: {},     // platform -> {task_id, status}，登录轮询状态
     keyword: '',
     filterStatus: '',
     dirty: false,      // 编辑器有未保存改动
@@ -38,8 +42,8 @@ export const useHubStore = defineStore('hub', {
     currentPubs: (s) => s.publications,
     // 已发布过（有 post_id）的平台，原地更新才有意义
     updatable: (s) => s.publications.filter(p => p.post_id).map(p => p.platform),
-    // 挂起等人工的工作流 run（等待卡片墙）
-    waitingRuns: (s) => s.runs.filter(r => r.status === 'waiting_human')
+    // 挂起等人工的任务（统一 waiting_human）
+    waitingTasks: (s) => s.tasks.filter(t => t.status === 'waiting_human')
   },
 
   actions: {
@@ -50,30 +54,29 @@ export const useHubStore = defineStore('hub', {
 
     async boot() {
       await Promise.all([this.loadStatus(), this.loadPlatforms(), this.loadList(),
-                         this.loadPendingHuman(), this.loadRuns()])
+                         this.loadPendingHuman(), this.loadTasks()])
       try { this.aiReady = (await api.aiStatus()).ready } catch { this.aiReady = false }
-      // 需要人工的任务定时巡检：一旦出现新条目就弹通知（用户要求"弹出来提醒我"）
+      // 需要人工的任务定时巡检：一旦出现新条目就弹通知
       this._phTimer && clearInterval(this._phTimer)
       this._phLast = this.pendingHuman.length
       this._phTimer = setInterval(() => {
         this.loadPendingHuman(true)
-        this.loadRuns(true)
+        this.loadTasks(true)
       }, 30000)
     },
 
-    async loadRuns(notify = false) {
+    async loadTasks(notify = false) {
       try {
-        const list = await api.runs() || []
-        const prevWaiting = new Set(this.runs
-          .filter(r => r.status === 'waiting_human').map(r => r.id))
-        this.runs = list
+        const list = await api.tasks() || []
+        const prevWaiting = new Set(this.tasks
+          .filter(t => t.status === 'waiting_human').map(t => t.task_id))
+        this.tasks = list
         if (notify) {
-          for (const r of list.filter(
-            x => x.status === 'waiting_human' && !prevWaiting.has(x.id))) {
+          for (const t of list.filter(
+            x => x.status === 'waiting_human' && !prevWaiting.has(x.task_id))) {
             ElNotification({
-              title: '工作流等待人工确认',
-              message: `「${r.title || '未命名'}」${r.human_task?.platform || ''}：` +
-                       `${r.human_task?.message || '挂起中，到管理页处理'}`,
+              title: '任务等待人工处理',
+              message: `${t.kind} 任务「${t.message || '挂起中'}」→ 到任务中心处理`,
               type: 'warning', duration: 0
             })
           }
@@ -81,10 +84,25 @@ export const useHubStore = defineStore('hub', {
       } catch { /* 轮询失败静默 */ }
     },
 
-    async resumeRun(runId, approved = true, note = '') {
-      await api.resumeRun(runId, approved, note)
-      ElMessage.success(approved ? '已恢复，工作流继续执行' : '已放弃该 run')
-      await Promise.all([this.loadRuns(), this.loadPendingHuman(),
+    // 提交任务 → 轮询到终态。返回 {status, result} 或抛错。
+    // 这是唯一的前端任务等待函数，登录/发布/更新都复用它。
+    async waitTask(taskId, deadlineMs = 600000, onTick = null) {
+      const deadline = Date.now() + deadlineMs
+      while (Date.now() < deadline) {
+        const t = await api.task(taskId)
+        if (onTick) onTick(t)
+        if (t.status === 'ok' || t.status === 'failed' || t.status === 'waiting_human') {
+          return t
+        }
+        await new Promise(res => setTimeout(res, POLL_MS))
+      }
+      throw new Error(`任务超时（${deadlineMs / 1000}s），可到任务中心继续查看`)
+    },
+
+    async resumeTask(taskId, approved = true) {
+      await api.resumeTask(taskId, approved)
+      ElMessage.success(approved ? '已恢复，任务继续执行' : '已放弃该任务')
+      await Promise.all([this.loadTasks(), this.loadPendingHuman(),
                          this.loadPubs(), this.loadAllPubs(), this.loadStatus()])
     },
 
@@ -110,24 +128,28 @@ export const useHubStore = defineStore('hub', {
       this.allPubs = await api.publications() || []
     },
 
-    // 登录流程下沉到 store：发布向导和管理视图共用同一份轮询状态
+    // 登录流程：统一任务语义，任务中心可见
     async startLogin(platform) {
-      if (this.loginStates[platform]?.status === 'running') return
+      if (this.loginTasks[platform]?.status === 'running') return
       const t = await api.startLogin(platform)
-      this.loginStates[platform] = { status: 'running', message: '等待扫码…' }
-      const timer = setInterval(async () => {
-        try {
-          const s = await api.loginStatus(platform, t.task_id)
-          this.loginStates[platform] = s
-          if (s.status === 'success' || s.status === 'failed') {
-            clearInterval(timer)
-            if (s.status === 'success') {
-              ElMessage.success(`${platform} 登录成功，以后自动复用`)
-              await this.loadStatus()
-            }
-          }
-        } catch { /* 轮询偶发失败忽略 */ }
-      }, 2000)
+      this.loginTasks[platform] = { task_id: t.task_id, status: 'running', message: '等待扫码…' }
+      this.waitTask(t.task_id, 600000, (st) => {
+        this.loginTasks[platform] = { task_id: t.task_id, ...st }
+      }).then((st) => {
+        this.loginTasks[platform] = { task_id: t.task_id, ...st }
+        if (st.status === 'ok') {
+          ElMessage.success(`${platform} 登录成功，以后自动复用`)
+          this.loadStatus()
+        } else if (st.status === 'waiting_human') {
+          ElNotification({
+            title: `${platform} 需要人工处理`,
+            message: st.message || '登录遇到验证码/风控，到任务中心处理',
+            type: 'warning', duration: 0
+          })
+        }
+      }).catch(() => {
+        this.loginTasks[platform] = { task_id: t.task_id, status: 'failed', message: '登录任务超时' }
+      })
     },
 
     async loadStatus() {
@@ -207,117 +229,84 @@ export const useHubStore = defineStore('hub', {
       } finally { this.saving = false }
     },
 
+    // 发布 = 勾平台 → 点发布 → 轮询任务。发布前自动保存（人的预期：
+    // 我点的发布内容必须是我刚写的最新版，不需要"先保存再发布"）
     async publish(platforms, draftOnly) {
-      if (!this.currentId) { ElMessage.warning('先保存再发布'); return }
+      if (!platforms.length) { ElMessage.warning('先选要发到哪些平台'); return null }
+      if (!this.currentId) await this.save()
+      if (!this.currentId) return null
       this.publishing = true
       try {
-        // 首选工作流引擎（ADR-003 绞杀者）：仅"启动失败"回退 legacy；
-        // 启动成功后只轮询、任何异常都向上抛——绝不回退，否则引擎还在跑、
-        // legacy 又发一遍 = 同一篇文章双发到平台。
-        const start = await api.publishWorkflow(
-          this.currentId, platforms, draftOnly).catch(() => null)
-        const r = start?.run_id
-          ? await this._pollWorkflowRows(start.run_id, platforms)
-          : await api.publish(this.currentId, platforms, draftOnly)
-        const bad = (r || []).filter(x => !x.ok)
-        if (bad.length === 0) ElMessage.success(`发布成功 ${(r || []).length} 个平台`)
-        else ElMessage.warning(`${bad.length} 个平台失败：${bad.map(b => b.platform).join('、')}`)
-        // 有平台需要人工收尾（如掘金草稿）：立即弹通知 + 刷新待人工清单
-        const needHuman = (r || []).filter(x => x.warning)
-        for (const x of needHuman) {
+        const t = await api.publish(this.currentId, platforms, draftOnly)
+        const done = await this.waitTask(t.task_id, 600000)
+        await this.loadTasks()
+        const res = done.result || {}
+        const rows = Array.isArray(res) ? res : (res.results || [])
+        if (done.status === 'waiting_human') {
+          const needHuman = rows.filter(x => x.warning) || []
           ElNotification({
-            title: `${x.platform} 需要人工收尾`,
-            message: (x.warning || '').slice(0, 120),
+            title: '部分平台需要人工收尾',
+            message: `已提交到草稿，到「管理 → 需要人工」完成最后一步（${needHuman.map(x => x.platform).join('、') || '详见任务详情'}）`,
             type: 'warning', duration: 0
           })
+          await this.loadPendingHuman()
+        } else {
+          const bad = rows.filter(x => !x.ok)
+          if (bad.length === 0) ElMessage.success(`发布成功 ${rows.length} 个平台`)
+          else ElMessage.warning(`${bad.length} 个平台失败：${bad.map(b => b.platform).join('、')}`)
         }
-        if (needHuman.length) await Promise.all([this.loadPendingHuman(), this.loadRuns()])
         await Promise.all([this.loadPubs(), this.loadStatus(), this.loadList()])
-        return r
+        return done
       } finally { this.publishing = false }
-    },
-
-    // 轮询工作流 run 到终态 → 映射成向导结果行。超时/异常直接抛（见 publish 注释）
-    async _pollWorkflowRows(runId, platforms, deadlineMs = 300000) {
-      const deadline = Date.now() + deadlineMs
-      let run = null
-      while (Date.now() < deadline) {
-        run = await api.runDetail(runId)
-        if (['done', 'failed', 'waiting_human'].includes(run.status)) break
-        await new Promise(res => setTimeout(res, 2000))
-      }
-      this.loadRuns()
-      if (!run || run.status === 'running') throw new Error('工作流发布超时')
-      const res = run.result || {}
-      if (run.status === 'failed') {
-        return (res.results && res.results.length)
-          ? res.results
-          : platforms.map(p => ({ platform: p, ok: false, error: run.error || '工作流失败' }))
-      }
-      if (run.status === 'waiting_human') {
-        const t = res.human_task || {}
-        // 已完成平台的真实结果 + 挂起平台合成 warning 行（对齐向导展示契约）
-        return [...(res.results || []),
-                { platform: t.platform, ok: true,
-                  warning: t.message || '需要人工完成最后一步',
-                  edit_url: t.edit_url || '' }]
-      }
-      return res.results || []
     },
 
     async updateRemote(platforms) {
       if (!this.currentId) return
       this.publishing = true
       try {
-        // M5 切流：仅启动失败回退 legacy，启动后绝不回退防双发
-        let rows, run_id = null
-        try {
-          const start = await api.updateWorkflow(this.currentId, platforms)
-          run_id = start.run_id
-          rows = await this._pollWorkflowRows(run_id, platforms, 900000)
-          this.loadRuns()
-        } catch (e) {
-          if (run_id) throw e
-          rows = await api.update(this.currentId, platforms)
-        }
-        const bad = (rows || []).filter(x => !x.ok)
-        if ((rows || []).some(x => x.warning)) {
+        const t = await api.update(this.currentId, platforms)
+        const done = await this.waitTask(t.task_id, 900000)
+        await this.loadTasks()
+        const res = done.result || {}
+        const rows = Array.isArray(res) ? res : (res.results || [])
+        const bad = rows.filter(x => !x.ok)
+        if (done.status === 'waiting_human') {
           ElNotification({ title: '更新需要人工收尾', type: 'warning', duration: 0,
             message: '到「管理 → 需要人工」处理' })
         } else if (bad.length === 0) ElMessage.success('同步更新完成')
         else ElMessage.warning(`${bad.length} 个平台更新失败`)
         await Promise.all([this.loadPubs(), this.loadAllPubs(), this.loadStatus()])
-        return rows
+        return done
       } finally { this.publishing = false }
     },
 
     async syncPending() {
-      await api.syncPending()
+      const t = await api.syncPending()
+      const done = await this.waitTask(t.task_id, 900000)
+      await this.loadTasks()
       ElMessage.success('同步完成')
       await Promise.all([this.loadStatus(), this.loadPubs()])
+      return done
     },
 
     async refreshPlatform(pf) {
-      const r = await api.refresh(pf)
-      ElMessage.success(`抓回 ${r.count} 篇`)
+      const t = await api.refresh(pf)
+      const done = await this.waitTask(t.task_id, 300000)
+      const res = done.result || {}
+      const count = typeof res === 'number' ? res : (res.count || 0)
+      ElMessage.success(`抓回 ${count} 篇`)
       await this.loadList()
-      return r
+      return done
     },
 
-    // 人工步骤接管：带登录态的内置有头浏览器打开平台页（不用去平台站点重登录）
+    // 人工步骤接管：带登录态的内置有头浏览器打开平台页
     async assistOpen(platform, url) {
       if (!url) { ElMessage.warning('没有可打开的平台页地址'); return }
       const t = await api.assistOpen(platform, url)
-      ElMessage.success('已在内置浏览器打开平台页（带登录态）——完成操作后关窗')
-      const timer = setInterval(async () => {
-        try {
-          const s = await api.assistStatus(platform, t.task_id)
-          if (s.status !== 'running') {
-            clearInterval(timer)
-            ElMessage.success('平台页已关闭。完成后回管理页点「已处理，恢复」')
-          }
-        } catch { /* 轮询失败静默 */ }
-      }, 3000)
+      ElMessage.success('已在内置浏览器打开平台页（带登录态）——完成操作后任务自动结束')
+      this.waitTask(t.task_id, 900000).then(() => {
+        ElMessage.success('平台页已关闭。如还需人工步骤，到任务中心处理')
+      }).catch(() => {})
     }
   }
 })

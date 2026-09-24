@@ -34,7 +34,7 @@
 git clone https://gitcode.com/badhope/ai-content-hub.git
 cd ai-content-hub
 pip install -r requirements.txt
-playwright install chromium
+python3 -m patchright install chromium   # 反检测浏览器；国内网络失败时自动复用预装 playwright chromium
 
 cp config.example.json config.json      # 填 AI key（可选，不填不影响发布功能）
 
