@@ -410,7 +410,7 @@ class Hub:
     def _with_adapter(self, platform, account, fn, page_hook=None):
         """统一入口：需要浏览器的开浏览器，走协议的直接调。
         浏览器从池里拿，常驻复用；页面用完即关（ctx 保留）。
-        page_hook(page)：页面就绪后回调（实时预览 LiveMonitor 挂载点，D11），
+        page_hook(page)：页面就绪后回调（已废弃，保留签名以兼容旧调用），
         必须在浏览器操作线程内调用（greenlet 约束）。"""
         ad = get_adapter(platform)
         if not ad.needs_browser:

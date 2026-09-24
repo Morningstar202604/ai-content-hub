@@ -70,17 +70,17 @@
         </span>
       </div>
 
-      <div class="split-view" :class="{ single: view !== 'split' }">
-        <el-input
-          v-if="view !== 'preview'"
+      <!-- Markdown 编辑器（md-editor-v3）：编辑/分屏/预览三态对应 preview=false/true/'preview' -->
+      <div class="md-wrap">
+        <MdEditor
           v-model="article.content_md"
-          class="md-area"
-          type="textarea"
-          resize="none"
-          placeholder="Markdown 正文…"
-          @input="touch"
+          :preview="editorPreview"
+          :theme="'dark'"
+          language="zh-CN"
+          :toolbars="toolbars"
+          class="md-editor"
+          @on-change="touch"
         />
-        <div v-if="view !== 'edit'" class="md-preview" v-html="rendered" />
       </div>
     </div>
   </div>
@@ -88,7 +88,8 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
-import MarkdownIt from 'markdown-it'
+import { MdEditor } from 'md-editor-v3'
+import 'md-editor-v3/lib/style.css'
 import { Check, PriceTag, Aim, Brush, Menu, Edit, Operation, View, Promotion, Refresh } from '@element-plus/icons-vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 
@@ -108,10 +109,15 @@ const view = ref(isMobile.value ? 'edit' : 'split')
 // 用响应式断点监听：从桌面拖窄到手机时，若还停在分屏就切回编辑
 watch(isMobile, m => { if (m && view.value === 'split') view.value = 'edit' })
 
-const md = new MarkdownIt({ html: true, linkify: true, breaks: false })
-const rendered = computed(() =>
-  md.render(props.article?.content_md || '')
-)
+// 编辑=纯编辑 / 分屏=左编右览 / 预览=纯预览（对应 md-editor-v3 的 preview prop）
+const editorPreview = computed(() =>
+  view.value === 'edit' ? false : view.value === 'preview' ? 'preview' : true)
+
+// 常用工具栏（砍掉导入导出/目录等低频项，保持轻量）
+const toolbars = ref(['bold', 'italic', 'strikethrough', 'heading',
+  'quote', 'ul', 'ol', 'code', 'link', 'image', 'table',
+  'revoke', 'next', 'preview', 'expand'])
+
 const chars = computed(() => (props.article?.content_md || '').length)
 const touch = () => emit('touch')
 
@@ -153,6 +159,33 @@ function onMore(cmd) {
 .status-sel { width: 116px; }
 .meta-row .spacer { flex: 1; }
 
-// 分屏容器撑满剩余高度
-.split-view { flex: 1; min-height: 0; }
+// Markdown 编辑器容器撑满剩余高度
+.md-wrap { flex: 1; min-height: 0; }
+
+// 让 md-editor-v3 融入"夜墨金箔"暗色体系
+.md-editor {
+  height: 100%;
+
+  :deep() {
+    // 编辑器本体
+    --md-bk-color: var(--surface);
+    --md-bk-color-light: var(--surface-2);
+    --md-bk-color-dark: var(--surface-3);
+    --md-border-color: var(--line);
+    --md-color: var(--tx-2);
+    --md-hover-bg-color: var(--surface-3);
+    --md-active-bg-color: var(--surface-3);
+    --md-accent-color: var(--accent);
+    --md-accent-color-light: var(--accent-soft);
+    --md-accent-color-dark: var(--accent-hi);
+    --md-code-bk-color: var(--surface-3);
+    --md-content-bk-color: var(--surface);
+    --md-meta-color: var(--tx-4);
+    --md-scrollbar-bg-color: transparent;
+    --md-scrollbar-thumb-bg-color: var(--line-strong);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+}
 </style>
