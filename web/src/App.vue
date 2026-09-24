@@ -74,7 +74,7 @@
       />
     </el-drawer>
 
-    <PublishWizard v-model="wizard" />
+    <PublishWizard v-model="wizard" :platforms="hub.platforms" />
 
     <AIWriteDialog
       v-model="aiDialog"

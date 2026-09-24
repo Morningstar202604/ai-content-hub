@@ -6,6 +6,7 @@ AI 或者 REST API 调的都是这里的方法，不用碰浏览器细节。
 
 import atexit
 import json
+import os
 import random
 import threading
 import time
@@ -44,11 +45,15 @@ class Hub:
     def __init__(self, headless=True):
         self.conn = db.connect()
         self.headless = headless
+        # 演示模式（DEMO=1）：不开浏览器、不调外部 API，登录/发布/更新/AI 写稿
+        # 全部模拟成功，用于产品演示与宣传片录制。任务引擎照常真实运转。
+        self.demo = os.environ.get("DEMO") == "1"
         # 统一任务引擎：REST/MCP 的登录、发布、更新、同步全部走它（重构第一刀）
         self.tasks = TaskManager(self, self.conn)
         # 风控：平台间隔 + 文章间隔，别调太小，被限流了别来找我
-        self.delay_platform = (8, 20)
-        self.delay_article = (30, 90)
+        # 演示模式下不需要风控延迟，直接归零让流程顺畅
+        self.delay_platform = (0, 0) if self.demo else (8, 20)
+        self.delay_article = (0, 0) if self.demo else (30, 90)
         # 遇到验证码时怎么处理：handoff=交人工 / abort=直接放弃
         self.on_captcha = "handoff"
         # 无头浏览器实例池：key=(platform, account)，登录流程不走池（它要独立的有头实例）
@@ -132,6 +137,9 @@ class Hub:
 
     def login(self, platform, account="default", timeout=600, on_captcha=None):
         """扫码/过验证登录一次，登录态存进本地 profile，之后长期有效。"""
+        if self.demo:
+            db.upsert_account(self.conn, platform, account, "-", "logined")
+            return True, "演示模式：模拟登录成功"
         ad = get_adapter(platform)
         # 纯协议平台不用开浏览器，直接验凭据
         if not ad.needs_browser:
@@ -187,6 +195,8 @@ class Hub:
         return False
 
     def check(self, platform, account="default"):
+        if self.demo:
+            return True
         ad = get_adapter(platform)
         if not ad.needs_browser:
             try:
@@ -265,8 +275,11 @@ class Hub:
     def assist_open(self, platform, url, timeout=900, account="default"):
         """带登录态的有头浏览器打开平台页——把"去平台互动"接进本机。
 
+        演示模式：直接返回成功，不真开浏览器。
         用我们的 profile（已登录），用户在弹出窗口里完成平台侧最后一步
         （如掘金「确定并发布」），关窗即结束。登录态四层保障全程继承。"""
+        if self.demo:
+            return {"ok": True, "msg": "演示模式：模拟打开平台页（带登录态）"}
         with self._busy_for(platform, account):
             self._drop(platform, account)
 
@@ -467,14 +480,46 @@ class Hub:
 
     # ---------------- AI ----------------
 
+    def _demo_article(self, topic, style="", words=2000, tags_hint=""):
+        """演示模式下的 AI 写稿：本地模板生成，不依赖 LLM。"""
+        import hashlib
+        seed = hashlib.md5(topic.encode("utf-8")).hexdigest()[:4]
+        return {
+            "title": topic,
+            "summary": f"《{topic}》深度解读：从背景到实践，一文讲透（演示文章）。",
+            "content_md": (
+                f"# {topic}\n\n"
+                f"> 这是一篇由 **AI 内容中台** 在演示模式下生成的文章（DEMO 演示）。\n\n"
+                f"## 背景\n\n{topic}正在成为内容创作者关注的焦点。"
+                f"本文带你从零了解它的来龙去脉、核心概念与落地方法。\n\n"
+                f"## 核心要点\n\n"
+                f"1. **统一入口**：一个后台管理所有内容平台，不用再逐站登录、逐站发布。\n"
+                f"2. **一次登录**：扫码一次，登录态长期复用，之后全自动发布。\n"
+                f"3. **一键多投**：选中目标平台，一篇文章同时发往知乎、掘金、CSDN 等。\n"
+                f"4. **原地更新**：改一处，已发布文章全平台同步更新，不产生重复内容。\n"
+                f"5. **人工兜底**：平台风控或验证码出现时，任务自动转人工，处理后可恢复。\n\n"
+                f"## 适用场景\n\n"
+                f"个人博客、技术社区运营、自媒体矩阵维护，都可以用它把重复劳动交给自动化。\n\n"
+                f"## 写在最后\n\n"
+                f"内容中台的价值在于：**把时间还给创作，把重复交给机器**。"
+                f"（本文为产品演示而生成，实际发布内容由你的真实文章决定。）\n"
+            ),
+            "tags": (tags_hint or "AI,内容中台,自动化"),
+            "ai_model": "demo-local",
+            "ext": "{}",
+        }
+
     def ai_write(self, topic, style="", words=2000, tags_hint="", publish_to=None):
         """AI 写一篇并入库。传了 publish_to 就顺手发出去。
 
         合规闸门：AI 源文章发布强制 draft_only（人审闸门），禁止 AI 内容
         直接正式上线。想上线须人工二次确认后再调 publish(draft_only=False)。
         """
-        from core import ai as ai_mod
-        art = ai_mod.write_article(topic, style, words, tags_hint)
+        if self.demo:
+            art = self._demo_article(topic, style, words, tags_hint)
+        else:
+            from core import ai as ai_mod
+            art = ai_mod.write_article(topic, style, words, tags_hint)
         # 入库前打 AIGC 标识（法规要求显式标识 + 可追溯模型来源）
         art = aigc_gate.add_aigc_label(art, art.get("ai_model", ""))
         ext = json.loads(art.get("ext", "{}") or {})
@@ -517,11 +562,46 @@ class Hub:
         return {"id": article_id, "pending_sync": len(db.get_pending_updates(self.conn))}
 
     def ai_ready(self):
+        if self.demo:
+            return True
         from core import ai as ai_mod
         return ai_mod.is_ready()
 
     def publish_single(self, article_id, platform, article, account="default",
                        draft_only=False, page_hook=None):
+        """发布到单个平台并完成落库（jobs/publications 记账）。
+
+        演示模式：直接返回模拟成功（含平台域名下的模拟链接），
+        让任务引擎、发布记录、前端全链路真实呈现，只差"真的打到平台"。"""
+        if self.demo:
+            # 轻延迟：让前端能捕捉到任务 running → ok 的真实流转，而非秒过
+            time.sleep(0.8 + random.random() * 0.9)
+            from core.adapters.base import get_adapter as _ga
+            _nm = _ga(platform).name
+            _demo_hosts = {
+                "zhihu": "zhuanlan.zhihu.com/p/", "bilibili": "www.bilibili.com/read/cv",
+                "cnblogs": "www.cnblogs.com/demo/p/", "csdn": "blog.csdn.net/demo/article/details/",
+                "jianshu": "www.jianshu.com/p/", "juejin": "juejin.cn/post/",
+                "oschina": "my.oschina.net/demo/blog/", "segmentfault": "segmentfault.com/a/",
+                "toutiao": "www.toutiao.com/article/",
+            }
+            import random as _r
+            _pid = str(_r.randint(7000000000000000000, 9999999999999999999))
+            _url = "https://" + _demo_hosts.get(platform, "example.com/") + _pid
+            db.upsert_publication(self.conn, article_id, platform, account,
+                                  post_id=_pid, post_url=_url,
+                                  edit_url=_url + "/edit",
+                                  status="ok" if not draft_only else "pending",
+                                  draft_only=1 if draft_only else 0,
+                                  content_hash=_content_hash(article),
+                                  published_at=db.now())
+            db.finish_job(self.conn,
+                          db.add_job(self.conn, "publish", article_id, platform),
+                          True, "演示模式：发布成功")
+            return {"platform": platform, "ok": True, "status": "ok",
+                    "post_id": _pid, "post_url": _url, "edit_url": _url + "/edit",
+                    "draft_only": draft_only, "demo": True,
+                    "note": f"已模拟发布到《{_nm}》（演示模式）"}
         """发布到单个平台并完成落库（jobs/publications 记账）。
 
         统一入口：legacy 与任务引擎都走这里（重构第一刀）
@@ -625,6 +705,19 @@ class Hub:
     def update_single(self, article_id, platform, pub, article, account="default"):
         """原地更新单个平台实例并完成落库（jobs/publications 记账）。
 
+        演示模式：直接返回更新成功。"""
+        if self.demo:
+            db.upsert_publication(self.conn, article_id, platform, account,
+                                  status="ok", last_error="", draft_only=0,
+                                  content_hash=_content_hash(article),
+                                  updated_at=db.now())
+            db.finish_job(self.conn,
+                          db.add_job(self.conn, "update", article_id, platform),
+                          True, "演示模式：更新成功")
+            return {"platform": platform, "ok": True, "demo": True,
+                    "note": "演示模式：模拟更新成功"}
+        """原地更新单个平台实例并完成落库（jobs/publications 记账）。
+
         legacy update() 循环体与工作流节点 update_instance 共用的唯一更新原语
         （对称于 publish_single，M5/ADR-007）。pub 携带 post_id/edit_url。
         成功返回 {'platform', 'ok': True}；失败在完成失败记账后抛异常。
@@ -698,6 +791,22 @@ class Hub:
 
     def refresh(self, platform, account="default", limit=50):
         """把平台上的文章列表抓回来入库，AI 才能"看见账号里有什么"。"""
+        if self.demo:
+            items = [{
+                "post_id": f"demo-{platform}-{i}", "title": f"《{platform} 平台演示文章 {i}》",
+                "url": f"https://example.com/{platform}/{i}", "edit_url": "",
+                "status": "published", "stats": {"read": 100 + i * 7, "like": 5 + i},
+            } for i in range(1, 4)]
+            for it in items:
+                aid = db.create_article(self.conn, it["title"], "",
+                                        status="published", source="import")
+                db.upsert_publication(self.conn, aid, platform, account,
+                                      post_id=it["post_id"], post_url=it["url"],
+                                      edit_url="", status="ok",
+                                      stats=json.dumps(it["stats"]), draft_only=0)
+            self.conn.commit()
+            return {"platform": platform, "count": len(items), "saved": len(items),
+                    "items": items, "demo": True}
         def _do(ad, page):
             return ad.list_articles(page, limit=limit)
         items = self._with_adapter(platform, account, _do)

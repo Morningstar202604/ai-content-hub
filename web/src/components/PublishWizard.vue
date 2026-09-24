@@ -83,12 +83,15 @@
 
 <script setup>
 import { ref, computed } from 'vue'
-import { ElNotification } from 'element-plus'
+import { ElNotification, ElMessage } from 'element-plus'
 import { Loading, CircleCheckFilled, CircleCloseFilled } from '@element-plus/icons-vue'
 import { useHubStore } from '@/stores/hub'
 
 const emit = defineEmits(['update:modelValue', 'done'])
-const props = defineProps({ modelValue: Boolean })
+const props = defineProps({
+  modelValue: Boolean,
+  platforms: { type: Array, default: () => [] },
+})
 const hub = useHubStore()
 
 const PLAT_MARKS = {
@@ -131,12 +134,16 @@ async function run() {
       }
     }
     await hub.loadPendingHuman()
-  } catch {
+  } catch (e) {
+    // 合规门禁/其他拒绝：把原因亮出来，停留在选择界面让用户调整（如勾"只发草稿"）
     results.value = []
+    ElMessage.error(e?.response?.data?.detail || e?.message || '发布失败，请查看任务记录')
   }
   running.value = false
-  done.value = true
-  emit('done')
+  if (results.value.length) {
+    done.value = true
+    emit('done')
+  }
 }
 
 function reset() {
