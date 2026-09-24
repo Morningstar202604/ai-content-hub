@@ -27,6 +27,10 @@ def main():
     p.add_argument("--platform", required=True)
     p.add_argument("--account", default="default")
 
+    p = sub.add_parser("logout", help="清除登录态（删 profile+cookie 快照，需重新扫码）")
+    p.add_argument("--platform", required=True)
+    p.add_argument("--account", default="default")
+
     p = sub.add_parser("diagnose", help="这个平台怎么接、验证码怎么过")
     p.add_argument("--platform", required=True)
 
@@ -92,6 +96,9 @@ def main():
         print(("✓ " if ok else "✗ ") + msg)
     elif a.cmd == "check":
         print("✓ 已登录" if hub.check(a.platform, a.account) else "✗ 未登录，跑 login")
+    elif a.cmd == "logout":
+        r = hub.logout(a.platform, a.account)
+        print(f"已清除 {a.platform} 登录态，删除: {r['removed'] or '无文件'}")
     elif a.cmd == "diagnose":
         print(json.dumps(hub.diagnose(a.platform), ensure_ascii=False, indent=2))
     elif a.cmd == "solve-captcha":

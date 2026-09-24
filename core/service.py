@@ -252,6 +252,33 @@ class Hub:
         with self._busy_for(platform, account):
             return browser_thread_run(_op)
 
+    def logout(self, platform, account="default"):
+        """清除某个平台的登录态：删 profile 目录 + auth 快照，账号状态置离线。
+
+        登录态管理闭环：login(存) → check(验) → logout(清)。不清的话
+        profile 目录会一直在磁盘上（cookie 也会过期，但留着占地方、易混淆）。
+        """
+        from core.browser import PROFILE_ROOT
+        import shutil
+        # 先把池里可能占着 profile 的实例释放掉，否则删不掉
+        self._drop(platform, account)
+        removed = []
+        profile_dir = PROFILE_ROOT / f"{platform}_{account}"
+        auth_file = PROFILE_ROOT / f"{platform}_{account}.auth.json"
+        if profile_dir.exists():
+            shutil.rmtree(profile_dir, ignore_errors=True)
+            removed.append(str(profile_dir))
+        if auth_file.exists():
+            auth_file.unlink(missing_ok=True)
+            removed.append(str(auth_file))
+        # 数据库状态置离线
+        self.conn.execute(
+            "UPDATE accounts SET status='offline', last_check=? WHERE platform=? AND name=?",
+            (time.time(), platform, account))
+        self.conn.commit()
+        return {"platform": platform, "removed": removed,
+                "note": "登录态已清除，下次登录需重新扫码"}
+
     def diagnose(self, platform):
         """排查端点：这平台到底该怎么接入、验证码怎么过，一目了然。"""
         from core.browser import ensure_display

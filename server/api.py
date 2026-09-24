@@ -366,6 +366,13 @@ def login(platform: str, body: LoginIn):
             "poll": f"/tasks/{task_id}"}
 
 
+@app.delete("/accounts/{platform}")
+def logout(platform: str):
+    """清除登录态：删 profile + cookie 快照，账号状态置离线。"""
+    r = hub.logout(platform)
+    return {"ok": True, **r}
+
+
 @app.get("/accounts/{platform}/diagnose")
 def diagnose(platform: str):
     """这个平台该怎么接、验证码怎么过——排查用。"""
