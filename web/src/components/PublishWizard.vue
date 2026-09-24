@@ -103,7 +103,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { ElNotification, ElMessage } from 'element-plus'
 import { Loading, CircleCheckFilled, CircleCloseFilled } from '@element-plus/icons-vue'
 import { useHubStore } from '@/stores/hub'
@@ -139,11 +139,29 @@ const progressPct = computed(() => results.value.length
   ? Math.min(95, Math.round(results.value.length / selected.value.length * 100))
   : running.value ? 15 : 0)
 
+// 分类是长期偏好（记住，下次自动带出）；标签跟具体文章走（不跨文章复用）
+const CAT_MEM_KEY = 'yigao.publish.categories'
+function loadCatMem() {
+  try { return JSON.parse(localStorage.getItem(CAT_MEM_KEY) || '{}') } catch { return {} }
+}
+function saveCatMem() {
+  try {
+    const mem = {}
+    for (const id of Object.keys(platformSettings.value)) {
+      const cat = platformSettings.value[id]?.category
+      if (cat) mem[id] = cat
+    }
+    localStorage.setItem(CAT_MEM_KEY, JSON.stringify(mem))
+  } catch { /* 隐私模式等场景静默失败 */ }
+}
 function ensureCfg(id) {
   if (!platformSettings.value[id]) {
-    platformSettings.value[id] = { category: '', tags: '' }
+    const cat = loadCatMem()[id] || ''
+    platformSettings.value[id] = { category: cat, tags: '' }
   }
 }
+// 分类一改就记，下次打开发布面板自动带出
+watch(platformSettings, () => saveCatMem(), { deep: true })
 function toggleCfg(id) {
   if (cfgOpen.value === id) { cfgOpen.value = null; return }
   cfgOpen.value = id
