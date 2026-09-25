@@ -43,12 +43,29 @@ class CSDNAdapter(PlatformAdapter):
     def check_auth(self, page) -> bool:
         # 注意：CSDN 未登录时访问 mp 后台**不跳转**（返回空壳 SPA），
         # 光看 URL 会误判成已登录。必须再验一次能不能读到用户名。
+        # 2026-09-25 修复：**不再 goto home_url**——登录流程里 check_auth
+        # 会每轮轮询，导航会把登录页（二维码）带走，永远等不到扫码。
+        # 纯 API 校验（page 在 csdn 域即可带 cookie 调业务接口）。
         try:
-            page.goto(self.home_url, timeout=60000, wait_until="domcontentloaded")
-            time.sleep(2)
             if "passport.csdn.net" in page.url or "/login" in page.url:
                 return False
-            return bool(self._username(page))
+            # 快路径：cookie 里有用户名（UserToken/UserName 是真正登录标志）
+            try:
+                if self._username(page):
+                    return True
+            except PlatformError:
+                pass
+            # 兜底：业务接口的列表**非空**才算登录（游客/未登录返回空列表，
+            # 只有登录用户的博客列表才有文章行——2026-09-25 实测假阳性修复）
+            try:
+                data = self.api_get(
+                    page,
+                    f"{HOME_API}?page=1&size=10&businessType=blog&noMore=false")
+                lst = (data.get("data") or {}).get("list")
+                return (data.get("code") == 200
+                        and isinstance(lst, list) and len(lst) > 0)
+            except Exception:
+                return False
         except Exception:
             return False
 

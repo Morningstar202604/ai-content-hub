@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # 导入即注册
 from core.adapters import (  # noqa: F401
-    bilibili, cnblogs, csdn, juejin, metaweblog, oschina, segmentfault, toutiao, zhihu,
+    bilibili, cnblogs, csdn, juejin, metaweblog, oschina, segmentfault, toutiao, zhihu, wuyi_cto,
 )
 
 

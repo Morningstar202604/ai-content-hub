@@ -121,7 +121,7 @@ class JuejinAdapter(PlatformAdapter):
     # 页面结构版本（第三刀加固）：平台改版时更新此版本并同步 key_selectors
     selector_version = "2026-09"
     key_selectors = {'editor': '.bytemd, .CodeMirror', 'title_input': "input[placeholder*='标题'], .title-input"}
-    home_url = "https://juejin.cn/creator/home"
+    home_url = "https://juejin.cn/"   # 2026-09-25：creator/home 对数据中心 IP 风控(4xx)，改首页（页面在 juejin.cn 域即可带 cookie 走 API）
     list_url = "https://juejin.cn/creator/content/article"
     new_url = "https://juejin.cn/editor/drafts/new"
 
@@ -205,10 +205,14 @@ class JuejinAdapter(PlatformAdapter):
         brief = (article.get("summary")
                  or (article.get("content_md", "")[:100].replace("\n", " ")))
 
-        # 确保在掘金域名下（cookie 需要）
+        # 确保在掘金域名下（cookie 需要）。goto 失败不拦：page 若已在
+        # juejin.cn 域（首页能开）就继续走 API；风控页打不开也尽力发 API
         if "juejin.cn" not in page.url:
-            page.goto(self.home_url, timeout=60000, wait_until="domcontentloaded")
-            time.sleep(2)
+            try:
+                page.goto(self.home_url, timeout=60000, wait_until="domcontentloaded")
+                time.sleep(2)
+            except Exception:
+                pass
 
         # 标签：把文章标签解析成掘金 tag_id（找不到时兜底 Python 7104）
         tag_ids = options.get("tag_ids") or _resolve_tag_ids(

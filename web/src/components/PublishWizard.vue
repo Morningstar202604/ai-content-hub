@@ -241,7 +241,7 @@ function goManage() {
   border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
   cursor: pointer; transition: border-color .15s, background .15s;
   &:hover { border-color: var(--line-strong); }
-  &.on { border-color: var(--accent-hi); background: rgba(232, 190, 108, .06); }
+  &.on { border-color: var(--accent); background: var(--accent-soft); }
   &.cfg { border-color: var(--accent-hi); }
   .plat-top { display: flex; align-items: center; gap: 9px; }
   .plat-badge {

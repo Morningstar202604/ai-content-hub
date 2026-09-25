@@ -62,13 +62,11 @@ class ZhihuAdapter(PlatformAdapter):
     DOMAIN = "zhihu.com"
 
     def check_auth(self, page) -> bool:
+        # 只认「我」接口返回真实用户：URL 判断有假成功（扫码确认页/未登录页
+        # 都可能不含 /signin，2026-09-25 实测 z_c0 缺失的根因）
         try:
-            url = page.url
-            if self.DOMAIN not in url:
-                page.goto(self.new_url, timeout=60000, wait_until="domcontentloaded")
-                url = page.url
-                time.sleep(1.5)
-            return "/signin" not in url
+            data = self.api_get(page, "https://www.zhihu.com/api/v4/me")
+            return bool(data and (data.get("id") or data.get("url_token")))
         except Exception:
             return False
 
