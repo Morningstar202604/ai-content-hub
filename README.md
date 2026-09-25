@@ -1,5 +1,7 @@
 # 一稿 YiGao · AI 内容中台
 
+> [English](README.en.md) · 中文
+
 > **一稿写，全网发。** 文章存在你自己的库里，AI 通过 API / MCP 全权管理：写、改、发、更新、看账号全部内容。
 > 自带内置浏览器，扫码登录一次就长期在线，不依赖你日常的 Chrome / Edge 开着。
 
@@ -8,25 +10,28 @@
   <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-blue">
   <img alt="fastapi" src="https://img.shields.io/badge/API-FastAPI-teal">
   <img alt="mcp" src="https://img.shields.io/badge/AI-MCP-orange">
-  <img alt="platforms" src="https://img.shields.io/badge/platforms-9-blueviolet">
+  <img alt="platforms" src="https://img.shields.io/badge/platforms-10-blueviolet">
+  <img alt="GitCode" src="https://img.shields.io/badge/GitCode-badhope%2Fai--content--hub-1a73e8">
+  <img alt="国内模型" src="https://img.shields.io/badge/AI-DeepSeek%20%2F%20豆包%20%2F%20通义-brightgreen">
 </p>
 
-![一稿 · 主界面](docs/screenshots/01-home.png)
+![一稿 · 主界面（晴空主题）](docs/screenshots/01-home.png)
 
 <table>
   <tr>
     <td width="50%"><img src="docs/screenshots/02-editor.png" alt="编辑器"><br><sub>Markdown 编辑 / 分屏 / 预览三态，写完直接选平台发</sub></td>
-    <td width="50%"><img src="docs/screenshots/03-publish.png" alt="发布"><br><sub>一键多发，发布实例落库，可原地更新已发文章</sub></td>
+    <td width="50%"><img src="docs/screenshots/03-publish.png" alt="发布向导"><br><sub>一键多发，发布实例落库，可原地更新已发文章</sub></td>
   </tr>
 </table>
 
 ## 30 秒看懂它能干什么
 
-- **多平台一键分发**：一篇文章，勾选平台，同时发到 **9 个平台**（掘金 / CSDN / 博客园 / 知乎 / 思否 / B站专栏 / 头条号 / 开源中国 / 自建博客）。
+- **多平台一键分发**：一篇文章，勾选平台，同时发到 **10 个平台**（掘金 / CSDN / 博客园 / 知乎 / 思否 / B站专栏 / 头条号 / 开源中国 / 51CTO / 自建博客）。
 - **原地更新，不是重发**：改了文章，它去打开各平台的**编辑页**改原文，URL 不变、评论点赞都在。
 - **AI 全权接管**：内置 MCP Server + REST API，Claude 或任何脚本都能直接建文章、发布、抓取账号里的文章。
 - **完全自托管**：文章库、登录态、浏览器 profile 全在你自己的机器上，不依赖任何第三方 SaaS。
-- **自带 Web 管理界面**：暗色极简界面，响应式适配桌面 / 平板 / 手机。
+- **免扫码通道**：博客园 / 51CTO / 自建博客走 MetaWeblog 协议，账号密码直发，一次配置长期免登录。
+- **自带 Web 管理界面**：明亮清爽的「晴空」主题，响应式适配桌面 / 平板 / 手机。
 
 ## 快速开始
 
@@ -45,13 +50,14 @@ python cli.py --headed login --platform juejin
 python cli.py serve
 ```
 
-## 支持平台（9 个）
+## 支持平台（10 个）
 
 | 平台 | 方式 | 发布 | 原地更新 | 抓取列表 | 备注 |
 |---|---|---|---|---|---|
-| 掘金 | 浏览器 + 页面 API | ✅ | ✅ | ✅ | |
-| CSDN | 浏览器 | ✅ | ✅ | ✅ | |
+| 掘金 | 浏览器 + 页面 API | ✅ | ✅ | ✅ | **实测真发成功** |
+| CSDN | 浏览器 | ✅ | ✅ | ✅ | 验证码登录 |
 | 博客园 | MetaWeblog 协议 | ✅ | ✅ | ✅ | **免浏览器、零验证码** |
+| 51CTO | MetaWeblog 账密 | ✅ | ✅ | ✅ | 免扫码，账号密码直发 |
 | 自建博客 | MetaWeblog 账密 | ✅ | ✅ | ✅ | WordPress/Typecho，免扫码 |
 | 知乎 | 浏览器 UI 注入 | ✅ | ✅ | — | 扫码登录；发布后自动抓文章 ID |
 | 思否 SegmentFault | API 建稿 + UI 发布 | ✅ | ✅ | — | |
@@ -80,8 +86,8 @@ python cli.py serve
 | AI 全权管理 | 只能"发" | 增删改查 + 列表 + 状态 |
 | 做成独立程序 | 做不到，必须寄生 | 天然独立，能打包分发 |
 
-代价：平台适配要自己写。目前 9 个平台已实现（见上方平台矩阵），
-扩平台照着 150 行抄一个即可。文章可以由 AI 直接写（`core/ai.py`），接任何 OpenAI 兼容模型。
+代价：平台适配要自己写。目前 10 个平台已实现（见上方平台矩阵），
+扩平台照着 150 行抄一个即可。文章可以由 AI 直接写（`core/ai.py`），接任何 OpenAI 兼容模型（DeepSeek / 豆包 / 通义 / Kimi / 智谱 / Ollama）。
 
 ---
 
@@ -101,7 +107,7 @@ python cli.py serve
               │
      内置 Chromium（每平台一个持久化 profile）
               │
-     适配器：掘金 / CSDN / 知乎 / 思否 / B站 / 头条 / 开源中国 / 自建博客(WordPress/Typecho)
+     适配器：掘金 / CSDN / 知乎 / 思否 / B站 / 头条 / 开源中国 / 博客园 / 51CTO / 自建博客(WordPress/Typecho)
               │
      发布    列表    原地更新
 ```
@@ -140,7 +146,8 @@ python cli.py status
 
 启动服务后浏览器打开 `http://127.0.0.1:8800`。左边文章列表，中间编辑区，右边发布面板。
 
-界面走**极简黑白**设计：中性灰阶打底、单一强调色、强字号层级，顶栏是分组工具条
+界面走「**晴空**」主题——明亮现代 SaaS 风：浅灰底 + 纯白卡片 + 飞书蓝主色，
+圆角适中、无衬线字体、全链路 0 外部请求（离线可用），顶栏是分组工具条
 （品牌 / 统计 / AI 状态 / 主操作），编辑器为绝对主角。
 
 **前端技术栈**（`web/` 目录，独立工程）：
@@ -489,31 +496,32 @@ dump_dom(page, "csdn_list")     # HTML 存到 data/debug/
 
 ## 十三、当前状态与已知限制
 
-**已跑通（沙箱实测）**：
+**已跑通（真实账号 + 沙箱实测）**：
 
 | 能力 | 状态 |
 |---|---|
 | 数据层 / 业务层（文章库、发布实例、任务流水、改内容自动标待同步） | ✅ |
 | AI 写稿（本地 mock 端到端：标题抽取、摘要、标签、改写、润色） | ✅ |
-| REST API（25 个端点）+ MCP Server（13 个工具，Claude 直连） | ✅ |
+| REST API + MCP Server（13 个工具，Claude 直连） | ✅ |
 | 内置浏览器 + 反检测（8 项指纹：webdriver 隐藏、WebGL 伪装等） | ✅ |
-| Web 管理界面（极简黑白，真实浏览器点过建/改/存/预览/发布，无 JS 报错） | ✅ |
+| Web 管理界面（晴空主题，真实浏览器点过建/改/存/预览/发布，无 JS 报错） | ✅ |
 | Web UI 登录→发布全流程 E2E（掘金 16/16 · 知乎 9/9，每步截图留证） | ✅ |
 | 响应式适配（≥1280 三栏 / 1024-1280 两栏+抽屉 / 平板 / 手机，实测无裁切） | ✅ |
 | 验证码三层策略 + Xvfb 自动兜底 + 博客园自动抠 MetaWeblog 令牌 | ✅ |
-
-> **需要真实账号跑一次才能定论**：发布、原地更新、列表依赖真实登录态，沙箱里没账号无法端到端验证。
-> 掘金的 API 路径、CSDN 的编辑器选择器按公开结构编写，**第一次实跑可能需要微调**。
-> 建议先 `python cli.py publish --id 1 --platforms juejin --draft` 只发草稿箱，确认无误再正式发。
+| **掘金真实发布（真账号）** | ✅ 草稿创建成功（post_id 落库，编辑器内可见） |
+| **登录态持久化**（登录→auth.json 快照→check_auth 恢复→发布） | ✅ 掘金全链路；知乎/B站受数据中心 IP 风控影响（换真实网络即稳定） |
 
 **已知限制**：
 - 平台风控：程序内置了平台间隔（8-20s）和文章间隔（30-90s）限速，别调太小
+- 数据中心 / 云服务器 IP 容易被平台风控踢登录态（知乎 z_c0、B站 SESSDATA 实测被踢），
+  **首次扫码登录建议在家庭/办公网络完成**，登录态持久化后换环境复用
 - CSDN 更新已发布文章会重新进审核
-- 掘金标签（tag_ids）暂未实现，走的是无标签发布，需要的话可在适配器里加标签搜索接口
+- 掘金正式公开需在编辑器点「发布→确定并发布」（2026-09 起 publish API 收紧为草稿），
+  本项目默认 `draft_only` 草稿先行，人工确认后上线
 - 单账号模型，`account` 参数已预留但多账号并发未测
 - **验证码做不到 100% 自动**：服务端判定的验证码（阿里云/极验/reCAPTCHA）本质上需要人。
   程序的设计目标是"尽量不遇到 + 遇到了一次性解决 + 真弹了交人工"，
-  而不是硬解。要完全无人值守，走 L1 的协议通道（如博客园的 MetaWeblog）
+  而不是硬解。要完全无人值守，走 L1 的协议通道（博客园 / 51CTO / 自建博客的 MetaWeblog）
 - **首次登录必须在能看到浏览器的机器上做**：Linux 服务器上程序会自动起 Xvfb，
   但你在服务器上"扫码"不现实（看不到屏幕）。建议在有桌面的机器上登录一次，
   把 `data/profiles/` 整个拷到服务器复用
@@ -537,6 +545,7 @@ ai-content-hub/
 │     ├─ juejin.py         掘金（浏览器 + 内容 API）
 │     ├─ csdn.py           CSDN（浏览器）
 │     ├─ cnblogs.py        博客园（免浏览器，MetaWeblog）
+│     ├─ wuyi_cto.py       51CTO（免浏览器，MetaWeblog 账密直发）
 │     ├─ zhihu.py          知乎专栏（Draft.js 编辑器注入）
 │     ├─ segmentfault.py   思否（草稿 API + token 头）
 │     ├─ bilibili.py       B站专栏（FormData + bili_jct）
@@ -580,14 +589,14 @@ ai-content-hub/
 
 ## 仓库地址
 
-四平台并列同步（同分支、同标签、同 HEAD），不分主次，任意选用：
+国内平台为主仓库（同步同一分支），GitHub 为国际镜像：
 
 | 平台 | 地址 |
 |---|---|
-| GitHub | <https://github.com/x33834/ai-content-hub> |
-| GitHub | <https://github.com/Morningstar202604/ai-content-hub> |
-| GitCode | <https://gitcode.com/badhope/ai-content-hub> |
-| Gitee | <https://gitee.com/badhope/ai-content-hub> |
+| **GitCode（主）** | <https://gitcode.com/badhope/ai-content-hub> |
+| Gitee（国内镜像） | <https://gitee.com/badhope/ai-content-hub> |
+| GitHub（国际镜像） | <https://github.com/x33834/ai-content-hub> |
+| GitHub（国际镜像 2） | <https://github.com/Morningstar202604/ai-content-hub> |
 
 ## 许可证
 

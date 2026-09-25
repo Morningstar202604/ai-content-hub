@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, refactor-v1]
   pull_request:
-    branches: [main]
+    branches: [main, refactor-v1]
 
 permissions:
   contents: read
@@ -19,3 +19,8 @@ jobs:
           python-version: "3.12"
       - name: 语法检查（compileall）
         run: python -m compileall -q .
+      - name: 启动冒烟测试（服务可启动、API 可访问）
+        run: |
+          timeout 60 python3 -m server.api &
+          sleep 6
+          curl -fsS -m 5 http://127.0.0.1:8800/status | head -c 300
